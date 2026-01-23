@@ -1,0 +1,54 @@
+# .github/workflows/claude-pr-review.yml
+# Automatic PR review with @claude mentions
+
+name: Claude Code PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    # Run on PR events OR when someone comments @claude
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@claude'))
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          # For @claude mentions, use the comment as the prompt
+          # For PR events, use auto-review mode
+          mode: ${{ github.event_name == 'issue_comment' && 'interactive' || 'auto-review' }}
+
+          # Review configuration
+          review_level: thorough  # quick | standard | thorough
+
+          # What to check
+          check_security: true
+          check_performance: true
+          check_style: true
+          check_tests: true
+
+          # Use project's CLAUDE.md for context
+          use_project_context: true
+
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Or use: CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX

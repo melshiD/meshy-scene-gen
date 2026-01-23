@@ -1,0 +1,59 @@
+# .github/workflows/claude-security-review.yml
+# Security-focused review on PRs touching sensitive files
+
+name: Claude Security Review
+
+on:
+  pull_request:
+    paths:
+      - 'src/auth/**'
+      - 'src/api/**'
+      - 'src/middleware/**'
+      - '**/*security*'
+      - '**/*auth*'
+      - '**/*password*'
+      - '**/*token*'
+      - '**/contracts/**'  # Smart contracts
+      - '.env*'
+      - '**/secrets*'
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude Security Analysis
+        uses: anthropics/claude-code-security-review@v1
+        with:
+          # OWASP-aligned security checks
+          check_injection: true
+          check_auth: true
+          check_sensitive_data: true
+          check_xss: true
+          check_access_control: true
+
+          # Fail PR if critical issues found
+          fail_on_critical: true
+          fail_on_high: false
+
+          # Output format
+          output_sarif: true  # For GitHub Security tab
+
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: claude-security-results.sarif

@@ -1,0 +1,59 @@
+# .github/workflows/claude-issue-handler.yml
+# Let Claude implement features from GitHub issues
+
+name: Claude Issue Implementation
+
+on:
+  issues:
+    types: [assigned]
+  issue_comment:
+    types: [created]
+
+jobs:
+  implement:
+    # Trigger when issue is assigned to 'claude-bot' or someone comments '@claude implement'
+    if: |
+      (github.event_name == 'issues' &&
+       contains(github.event.issue.assignees.*.login, 'claude-bot')) ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@claude implement'))
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Claude Implementation
+        uses: anthropics/claude-code-action@v1
+        with:
+          mode: implement
+
+          # Create branch and PR automatically
+          create_branch: true
+          branch_prefix: 'claude/'
+          create_pr: true
+
+          # Use issue description as requirements
+          issue_number: ${{ github.event.issue.number }}
+
+          # Run tests before PR
+          run_tests: true
+          test_command: 'npm test'
+
+          # Use project context
+          use_project_context: true
+
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
