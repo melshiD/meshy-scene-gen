@@ -28,6 +28,104 @@ export interface DecomposedPrompt {
 /** Lighting preset names */
 export type LightingPreset = 'dramatic' | 'soft' | 'studio';
 
+// ============================================================================
+// Multi-Object Scene Types
+// ============================================================================
+
+/** Individual scene object */
+export interface SceneObject {
+  id: string;
+  name: string;
+  meshUrl: string | null;
+  prompt?: string;
+  artStyle?: MeshyArtStyle;
+  position: Vec3;
+  scale: number;
+  rotation: Vec3;
+  visible: boolean;
+  locked: boolean;
+  /** Generation status for this object */
+  status?: JobStatus;
+  progress?: number;
+}
+
+/** Layout preset types */
+export type LayoutPreset =
+  | 'centered'
+  | 'grid'
+  | 'circular'
+  | 'semicircle'
+  | 'pyramid'
+  | 'scattered'
+  | 'line'
+  | 'cluster'
+  | 'custom';
+
+/** Layout configuration */
+export interface LayoutConfig {
+  preset: LayoutPreset;
+  spacing: number;
+  groundPlane: boolean;
+  centerPoint: Vec3;
+  radius: number;
+  rows?: number;
+  cols?: number;
+  randomSeed?: number;
+}
+
+/** Camera configuration */
+export interface CameraConfig {
+  position: Vec3;
+  fov: number;
+  lookAt: Vec3;
+}
+
+/** Lighting configuration */
+export interface LightingConfig {
+  preset: LightingPreset;
+  intensity?: number;
+  color?: string;
+}
+
+/** Background configuration */
+export interface BackgroundConfig {
+  url: string | null;
+  prompt?: string;
+  status?: JobStatus;
+}
+
+/** Multi-object scene configuration */
+export interface MultiObjectSceneConfig {
+  objects: SceneObject[];
+  maxObjects: number;
+  background: BackgroundConfig;
+  camera: CameraConfig;
+  lighting: LightingConfig;
+  layout: LayoutConfig;
+}
+
+/** Default layout config */
+export const DEFAULT_LAYOUT: LayoutConfig = {
+  preset: 'centered',
+  spacing: 1.0,
+  groundPlane: true,
+  centerPoint: { x: 0, y: 0, z: 0 },
+  radius: 2.0,
+};
+
+/** Create a new scene object with defaults */
+export function createSceneObject(partial: Partial<SceneObject> & { id: string; name: string }): SceneObject {
+  return {
+    meshUrl: null,
+    position: { x: 0, y: 0, z: 0 },
+    scale: 1,
+    rotation: { x: 0, y: 0, z: 0 },
+    visible: true,
+    locked: false,
+    ...partial,
+  };
+}
+
 /** Scene preset configuration */
 export interface ScenePreset {
   id: string;
@@ -82,7 +180,7 @@ export interface SceneConfigOverrides {
   lighting?: Partial<{ preset: LightingPreset; intensity?: number; color?: string }>;
 }
 
-/** Request to generate an asset */
+/** Request to generate an asset (single object - legacy) */
 export interface GenerateRequest {
   /** Single prompt - will be decomposed by AI */
   prompt?: string;
@@ -94,6 +192,50 @@ export interface GenerateRequest {
   preset?: string;
   /** Override specific preset values */
   overrides?: SceneConfigOverrides;
+}
+
+/** Object generation request for multi-object scenes */
+export interface ObjectGenerateRequest {
+  prompt: string;
+  artStyle?: MeshyArtStyle;
+}
+
+/** Request to generate a multi-object scene */
+export interface MultiObjectGenerateRequest {
+  /** Background prompt */
+  backgroundPrompt: string;
+  /** Objects to generate */
+  objects: ObjectGenerateRequest[];
+  /** Layout preset to apply */
+  layoutPreset?: LayoutPreset;
+  /** Scene preset for camera/lighting */
+  scenePreset?: string;
+  /** Max objects allowed */
+  maxObjects?: number;
+}
+
+/** Per-object generation status */
+export interface ObjectGenerationStatus {
+  id: string;
+  prompt: string;
+  status: JobStatus;
+  progress?: number;
+  meshUrl?: string;
+  error?: string;
+}
+
+/** Multi-object generation job status */
+export interface MultiObjectGenerationJob {
+  id: string;
+  status: JobStatus;
+  background: {
+    status: JobStatus;
+    url?: string;
+    error?: string;
+  };
+  objects: ObjectGenerationStatus[];
+  createdAt: Date;
+  completedAt?: Date;
 }
 
 /** Job status */
