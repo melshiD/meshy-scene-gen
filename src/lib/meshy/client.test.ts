@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  MeshyClient,
-  createMeshyClient,
-  createMeshyClientFromEnv,
-  isTaskComplete,
-  isTaskPending,
-  getGlbUrl,
+  createMeshTask,
+  getMeshTaskStatus,
+  waitForMesh,
+  getMeshUrl,
+  generateMesh,
+  MeshyError,
 } from './client';
 import type { MeshyTask } from '@/types';
 
@@ -13,131 +13,90 @@ import type { MeshyTask } from '@/types';
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
-describe('MeshyClient', () => {
-  const mockApiKey = 'test-api-key';
-  let client: MeshyClient;
+describe('Meshy API Client', () => {
+  const originalEnv = process.env.MESHY_API_KEY;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    client = createMeshyClient({ apiKey: mockApiKey });
+    process.env.MESHY_API_KEY = 'test-api-key';
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    process.env.MESHY_API_KEY = originalEnv;
   });
 
-  describe('createMeshyClient', () => {
-    it('should create a client with valid config', () => {
-      const c = createMeshyClient({ apiKey: 'test-key' });
-      expect(c).toBeInstanceOf(MeshyClient);
-    });
-
-    it('should throw if API key is missing', () => {
-      expect(() => createMeshyClient({ apiKey: '' })).toThrow(
-        'Meshy API key is required'
-      );
-    });
-
-    it('should allow custom base URL', () => {
-      const c = createMeshyClient({
-        apiKey: 'test-key',
-        baseUrl: 'https://custom.api.com',
-      });
-      expect(c).toBeInstanceOf(MeshyClient);
-    });
-  });
-
-  describe('createMeshyClientFromEnv', () => {
-    it('should create client from environment variable', () => {
-      const originalEnv = process.env.MESHY_API_KEY;
-      process.env.MESHY_API_KEY = 'env-api-key';
-
-      const c = createMeshyClientFromEnv();
-      expect(c).toBeInstanceOf(MeshyClient);
-
-      process.env.MESHY_API_KEY = originalEnv;
-    });
-
-    it('should throw if environment variable is missing', () => {
-      const originalEnv = process.env.MESHY_API_KEY;
-      delete process.env.MESHY_API_KEY;
-
-      expect(() => createMeshyClientFromEnv()).toThrow(
-        'MESHY_API_KEY environment variable is required'
-      );
-
-      process.env.MESHY_API_KEY = originalEnv;
-    });
-  });
-
-  describe('createTask', () => {
+  describe('createMeshTask', () => {
     it('should create a task with default options', async () => {
-      const mockTaskId = 'task-123';
       const mockTask: MeshyTask = {
-        id: mockTaskId,
+        id: 'task-123',
         status: 'PENDING',
         progress: 0,
         created_at: Date.now(),
       };
 
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ result: mockTaskId }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve(mockTask),
-        });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockTask),
+      });
 
-      const result = await client.createTask({ prompt: 'a red cube' });
+      const result = await createMeshTask({ prompt: 'a red cube' });
 
       expect(result).toEqual(mockTask);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
 
-      // Check POST request body
-      const postCall = mockFetch.mock.calls[0];
-      expect(postCall[0]).toContain('/text-to-3d');
-      expect(postCall[1].method).toBe('POST');
-      expect(JSON.parse(postCall[1].body)).toEqual({
+      const [url, options] = mockFetch.mock.calls[0];
+      expect(url).toContain('/text-to-3d');
+      expect(options.method).toBe('POST');
+      expect(JSON.parse(options.body)).toEqual({
         mode: 'preview',
         prompt: 'a red cube',
         art_style: 'realistic',
-        negative_prompt: undefined,
       });
     });
 
     it('should support custom art style and negative prompt', async () => {
-      const mockTaskId = 'task-456';
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ result: mockTaskId }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({ id: mockTaskId, status: 'PENDING', progress: 0, created_at: Date.now() }),
-        });
+      const mockTask: MeshyTask = {
+        id: 'task-456',
+        status: 'PENDING',
+        progress: 0,
+        created_at: Date.now(),
+      };
 
-      await client.createTask({
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockTask),
+      });
+
+      await createMeshTask({
         prompt: 'a blue sphere',
         artStyle: 'cartoon',
         negativePrompt: 'realistic, photorealistic',
         mode: 'preview',
       });
 
-      const postCall = mockFetch.mock.calls[0];
-      expect(JSON.parse(postCall[1].body)).toEqual({
+      const [, options] = mockFetch.mock.calls[0];
+      expect(JSON.parse(options.body)).toEqual({
         mode: 'preview',
         prompt: 'a blue sphere',
         art_style: 'cartoon',
         negative_prompt: 'realistic, photorealistic',
       });
     });
+
+    it('should throw MeshyError if API key is missing', async () => {
+      delete process.env.MESHY_API_KEY;
+
+      await expect(createMeshTask({ prompt: 'test' })).rejects.toThrow(
+        MeshyError
+      );
+      await expect(createMeshTask({ prompt: 'test' })).rejects.toThrow(
+        'MESHY_API_KEY environment variable is not set'
+      );
+    });
   });
 
-  describe('getTask', () => {
+  describe('getMeshTaskStatus', () => {
     it('should fetch task by ID', async () => {
       const mockTask: MeshyTask = {
         id: 'task-789',
@@ -159,12 +118,12 @@ describe('MeshyClient', () => {
         json: () => Promise.resolve(mockTask),
       });
 
-      const result = await client.getTask('task-789');
+      const result = await getMeshTaskStatus('task-789');
 
       expect(result).toEqual(mockTask);
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('/text-to-3d/task-789'),
-        expect.objectContaining({ method: 'GET' })
+        expect.anything()
       );
     });
 
@@ -173,16 +132,16 @@ describe('MeshyClient', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        json: () => Promise.resolve({ message: 'Task not found' }),
+        text: () => Promise.resolve(JSON.stringify({ message: 'Task not found' })),
       });
 
-      await expect(client.getTask('invalid-id')).rejects.toThrow(
+      await expect(getMeshTaskStatus('invalid-id')).rejects.toThrow(
         'Task not found'
       );
     });
   });
 
-  describe('pollUntilComplete', () => {
+  describe('waitForMesh', () => {
     it('should return immediately if task is succeeded', async () => {
       const mockTask: MeshyTask = {
         id: 'task-123',
@@ -198,7 +157,7 @@ describe('MeshyClient', () => {
         json: () => Promise.resolve(mockTask),
       });
 
-      const result = await client.pollUntilComplete('task-123');
+      const result = await waitForMesh('task-123');
       expect(result.status).toBe('SUCCEEDED');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
@@ -217,9 +176,7 @@ describe('MeshyClient', () => {
         json: () => Promise.resolve(mockTask),
       });
 
-      await expect(client.pollUntilComplete('task-123')).rejects.toThrow(
-        'Generation failed'
-      );
+      await expect(waitForMesh('task-123')).rejects.toThrow('Generation failed');
     });
 
     it('should throw on expired task', async () => {
@@ -235,8 +192,8 @@ describe('MeshyClient', () => {
         json: () => Promise.resolve(mockTask),
       });
 
-      await expect(client.pollUntilComplete('task-123')).rejects.toThrow(
-        'Meshy task expired'
+      await expect(waitForMesh('task-123')).rejects.toThrow(
+        'Mesh task expired before completion'
       );
     });
 
@@ -255,108 +212,15 @@ describe('MeshyClient', () => {
           }),
       });
 
-      await client.pollUntilComplete('task-123', {
-        onProgress: progressCallback,
-      });
+      await waitForMesh('task-123', { onProgress: progressCallback });
 
-      expect(progressCallback).toHaveBeenCalledWith(100, 'SUCCEEDED');
-    });
-  });
-
-  describe('listTasks', () => {
-    it('should list tasks without pagination', async () => {
-      const mockTasks: MeshyTask[] = [
-        { id: 'task-1', status: 'SUCCEEDED', progress: 100, created_at: Date.now() },
-        { id: 'task-2', status: 'PENDING', progress: 0, created_at: Date.now() },
-      ];
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockTasks),
-      });
-
-      const result = await client.listTasks();
-      expect(result).toEqual(mockTasks);
-    });
-
-    it('should support pagination params', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([]),
-      });
-
-      await client.listTasks({ pageNum: 2, pageSize: 10 });
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('pageNum=2'),
-        expect.anything()
-      );
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('pageSize=10'),
-        expect.anything()
+      expect(progressCallback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'SUCCEEDED', progress: 100 })
       );
     });
   });
 
-  describe('refineTask', () => {
-    it('should create a refine task from preview', async () => {
-      const mockRefinedTaskId = 'refined-task-123';
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ result: mockRefinedTaskId }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              id: mockRefinedTaskId,
-              status: 'PENDING',
-              progress: 0,
-              created_at: Date.now(),
-            }),
-        });
-
-      const result = await client.refineTask('preview-task-123');
-
-      expect(result.id).toBe(mockRefinedTaskId);
-      const postCall = mockFetch.mock.calls[0];
-      expect(JSON.parse(postCall[1].body)).toEqual({
-        mode: 'refine',
-        preview_task_id: 'preview-task-123',
-      });
-    });
-  });
-});
-
-describe('Helper functions', () => {
-  describe('isTaskComplete', () => {
-    it('should return true for terminal states', () => {
-      expect(isTaskComplete('SUCCEEDED')).toBe(true);
-      expect(isTaskComplete('FAILED')).toBe(true);
-      expect(isTaskComplete('EXPIRED')).toBe(true);
-    });
-
-    it('should return false for pending states', () => {
-      expect(isTaskComplete('PENDING')).toBe(false);
-      expect(isTaskComplete('IN_PROGRESS')).toBe(false);
-    });
-  });
-
-  describe('isTaskPending', () => {
-    it('should return true for pending states', () => {
-      expect(isTaskPending('PENDING')).toBe(true);
-      expect(isTaskPending('IN_PROGRESS')).toBe(true);
-    });
-
-    it('should return false for terminal states', () => {
-      expect(isTaskPending('SUCCEEDED')).toBe(false);
-      expect(isTaskPending('FAILED')).toBe(false);
-      expect(isTaskPending('EXPIRED')).toBe(false);
-    });
-  });
-
-  describe('getGlbUrl', () => {
+  describe('getMeshUrl', () => {
     it('should return GLB URL from completed task', () => {
       const task: MeshyTask = {
         id: 'task-123',
@@ -371,10 +235,11 @@ describe('Helper functions', () => {
         created_at: Date.now(),
       };
 
-      expect(getGlbUrl(task)).toBe('https://example.com/model.glb');
+      expect(getMeshUrl(task)).toBe('https://example.com/model.glb');
+      expect(getMeshUrl(task, 'fbx')).toBe('https://example.com/model.fbx');
     });
 
-    it('should return null if no model URLs', () => {
+    it('should throw if task not succeeded', () => {
       const task: MeshyTask = {
         id: 'task-123',
         status: 'PENDING',
@@ -382,7 +247,66 @@ describe('Helper functions', () => {
         created_at: Date.now(),
       };
 
-      expect(getGlbUrl(task)).toBeNull();
+      expect(() => getMeshUrl(task)).toThrow(MeshyError);
+      expect(() => getMeshUrl(task)).toThrow('expected SUCCEEDED');
+    });
+
+    it('should throw if model_urls missing', () => {
+      const task: MeshyTask = {
+        id: 'task-123',
+        status: 'SUCCEEDED',
+        progress: 100,
+        created_at: Date.now(),
+      };
+
+      expect(() => getMeshUrl(task)).toThrow('model_urls is missing');
+    });
+  });
+
+  describe('generateMesh', () => {
+    it('should create and wait for mesh', async () => {
+      const pendingTask: MeshyTask = {
+        id: 'task-123',
+        status: 'PENDING',
+        progress: 0,
+        created_at: Date.now(),
+      };
+
+      const completedTask: MeshyTask = {
+        id: 'task-123',
+        status: 'SUCCEEDED',
+        progress: 100,
+        model_urls: { glb: 'url', fbx: 'url', usdz: 'url', obj: 'url' },
+        created_at: Date.now(),
+        finished_at: Date.now(),
+      };
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(pendingTask),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(completedTask),
+        });
+
+      const result = await generateMesh({ prompt: 'test object' });
+
+      expect(result.status).toBe('SUCCEEDED');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('MeshyError', () => {
+    it('should have proper error properties', () => {
+      const error = new MeshyError('Test error', 'API_ERROR', 500, 'task-123');
+
+      expect(error.message).toBe('Test error');
+      expect(error.code).toBe('API_ERROR');
+      expect(error.statusCode).toBe(500);
+      expect(error.taskId).toBe('task-123');
+      expect(error.name).toBe('MeshyError');
     });
   });
 });
