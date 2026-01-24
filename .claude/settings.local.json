@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:docs.meshy.ai)"
+      "WebFetch(domain:docs.meshy.ai)",
+      "Bash(pnpm lint:*)"
     ]
   }
 }
