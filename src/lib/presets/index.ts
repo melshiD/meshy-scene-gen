@@ -1,4 +1,7 @@
-import type { ScenePreset } from '@/types';
+import type { ScenePreset, SceneConfig, SceneConfigOverrides } from '@/types';
+
+// Re-export the override type for convenience
+export type { SceneConfigOverrides } from '@/types';
 
 /**
  * Default scene presets for common use cases
@@ -101,11 +104,14 @@ export const DEFAULT_PRESETS: ScenePreset[] = [
   },
 ];
 
+// In-memory store for custom presets (would be replaced with DB in production)
+const customPresets: Map<string, ScenePreset> = new Map();
+
 /**
- * Get a preset by ID
+ * Get a preset by ID (checks custom presets first, then defaults)
  */
 export function getPreset(id: string): ScenePreset | undefined {
-  return DEFAULT_PRESETS.find((p) => p.id === id);
+  return customPresets.get(id) ?? DEFAULT_PRESETS.find((p) => p.id === id);
 }
 
 /**
@@ -116,8 +122,92 @@ export function getDefaultPreset(): ScenePreset {
 }
 
 /**
- * List all available presets
+ * List all available presets (custom + default)
  */
 export function listPresets(): ScenePreset[] {
-  return DEFAULT_PRESETS;
+  return [...Array.from(customPresets.values()), ...DEFAULT_PRESETS];
+}
+
+/**
+ * Save a custom preset
+ * @returns The saved preset with generated ID if not provided
+ */
+export function savePreset(preset: Omit<ScenePreset, 'id'> & { id?: string }): ScenePreset {
+  const id = preset.id ?? generatePresetId();
+  const fullPreset: ScenePreset = { ...preset, id };
+  customPresets.set(id, fullPreset);
+  return fullPreset;
+}
+
+/**
+ * Delete a custom preset
+ * @returns true if deleted, false if not found or is a default preset
+ */
+export function deletePreset(id: string): boolean {
+  // Don't allow deleting default presets
+  if (DEFAULT_PRESETS.some((p) => p.id === id)) {
+    return false;
+  }
+  return customPresets.delete(id);
+}
+
+/**
+ * Check if a preset exists
+ */
+export function presetExists(id: string): boolean {
+  return customPresets.has(id) || DEFAULT_PRESETS.some((p) => p.id === id);
+}
+
+/**
+ * Merge a preset with overrides to create a SceneConfig
+ */
+export function mergePresetWithOverrides(
+  preset: ScenePreset,
+  backgroundUrl: string,
+  meshUrl: string,
+  overrides?: SceneConfigOverrides
+): SceneConfig {
+  return {
+    backgroundUrl,
+    meshUrl,
+    object: overrides?.object
+      ? { ...preset.object, ...overrides.object }
+      : preset.object,
+    camera: overrides?.camera
+      ? { ...preset.camera, ...overrides.camera }
+      : preset.camera,
+    lighting: overrides?.lighting
+      ? { ...preset.lighting, ...overrides.lighting }
+      : preset.lighting,
+  };
+}
+
+/**
+ * Build a SceneConfig from preset ID, asset URLs, and optional overrides
+ */
+export function buildSceneConfig(
+  presetId: string | undefined,
+  backgroundUrl: string,
+  meshUrl: string,
+  overrides?: SceneConfigOverrides
+): SceneConfig {
+  const preset = presetId ? getPreset(presetId) : getDefaultPreset();
+  if (!preset) {
+    throw new Error(`Preset not found: ${presetId}`);
+  }
+  return mergePresetWithOverrides(preset, backgroundUrl, meshUrl, overrides);
+}
+
+/**
+ * Generate a unique preset ID
+ */
+function generatePresetId(): string {
+  return `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Clear all custom presets (for testing)
+ */
+export function clearCustomPresets(): void {
+  customPresets.clear();
 }

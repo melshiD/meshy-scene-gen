@@ -75,6 +75,13 @@ export interface SceneConfig {
 // API Types
 // ============================================================================
 
+/** Deep partial type for scene config overrides */
+export interface SceneConfigOverrides {
+  object?: Partial<{ position: Vec3; scale: number; rotation: Vec3 }>;
+  camera?: Partial<{ position: Vec3; fov: number; lookAt: Vec3 }>;
+  lighting?: Partial<{ preset: LightingPreset; intensity?: number; color?: string }>;
+}
+
 /** Request to generate an asset */
 export interface GenerateRequest {
   /** Single prompt - will be decomposed by AI */
@@ -86,7 +93,7 @@ export interface GenerateRequest {
   /** Preset ID to use for scene configuration */
   preset?: string;
   /** Override specific preset values */
-  overrides?: Partial<SceneConfig>;
+  overrides?: SceneConfigOverrides;
 }
 
 /** Job status */
