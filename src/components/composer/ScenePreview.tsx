@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useRef, useEffect } from 'react';
+import { Suspense, useRef, useEffect, useMemo } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import {
   OrbitControls,
@@ -11,49 +11,90 @@ import {
 } from '@react-three/drei';
 import * as THREE from 'three';
 import { useComposerStore } from '@/stores/composer-store';
+import type { SceneObject as SceneObjectType } from '@/types';
 
 // ============================================================================
 // Scene Object Component
 // ============================================================================
 
 interface SceneObjectProps {
-  url: string | null;
+  object: SceneObjectType;
+  isSelected: boolean;
 }
 
 // Separate component for loaded GLTF to satisfy hook rules
 function LoadedMesh({ url }: { url: string }) {
   const gltf = useGLTF(url);
+  const clonedScene = useMemo(() => gltf.scene.clone(), [gltf.scene]);
 
   useEffect(() => {
-    if (gltf?.scene) {
+    if (clonedScene) {
       // Center and normalize the loaded model
-      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const box = new THREE.Box3().setFromObject(clonedScene);
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = maxDim > 0 ? 1 / maxDim : 1;
-      gltf.scene.scale.setScalar(scale);
+      clonedScene.scale.setScalar(scale);
 
       const center = box.getCenter(new THREE.Vector3());
-      gltf.scene.position.sub(center.multiplyScalar(scale));
+      clonedScene.position.sub(center.multiplyScalar(scale));
     }
-  }, [gltf]);
+  }, [clonedScene]);
 
-  return <primitive object={gltf.scene.clone()} />;
+  return <primitive object={clonedScene} />;
 }
 
 // Placeholder cube when no mesh loaded
-function PlaceholderMesh() {
+function PlaceholderMesh({ color = '#6366f1' }: { color?: string }) {
   return (
     <Center>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#6366f1" metalness={0.3} roughness={0.4} />
+        <meshStandardMaterial color={color} metalness={0.3} roughness={0.4} />
       </mesh>
     </Center>
   );
 }
 
-function SceneObject({ url }: SceneObjectProps) {
+// Selection highlight outline
+function SelectionOutline() {
+  return (
+    <mesh>
+      <boxGeometry args={[1.15, 1.15, 1.15]} />
+      <meshBasicMaterial color="#6366f1" wireframe transparent opacity={0.5} />
+    </mesh>
+  );
+}
+
+function SceneObject({ object, isSelected }: SceneObjectProps) {
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Don't render if not visible
+  if (!object.visible) return null;
+
+  return (
+    <group
+      ref={groupRef}
+      position={[object.position.x, object.position.y, object.position.z]}
+      rotation={[object.rotation.x, object.rotation.y, object.rotation.z]}
+      scale={object.scale}
+    >
+      {object.meshUrl ? (
+        <LoadedMesh url={object.meshUrl} />
+      ) : (
+        <PlaceholderMesh color={isSelected ? '#818cf8' : '#6366f1'} />
+      )}
+      {isSelected && <SelectionOutline />}
+    </group>
+  );
+}
+
+// Legacy single object support (for backward compatibility)
+interface LegacySceneObjectProps {
+  url: string | null;
+}
+
+function LegacySceneObject({ url }: LegacySceneObjectProps) {
   const { object } = useComposerStore();
   const groupRef = useRef<THREE.Group>(null);
 
@@ -211,17 +252,42 @@ function LoadingFallback() {
 }
 
 // ============================================================================
+// Multi-Object Renderer
+// ============================================================================
+
+function MultiObjectRenderer() {
+  const objects = useComposerStore((state) => state.objects);
+  const selectedObjectId = useComposerStore((state) => state.selectedObjectId);
+
+  return (
+    <>
+      {objects.map((obj) => (
+        <SceneObject
+          key={obj.id}
+          object={obj}
+          isSelected={obj.id === selectedObjectId}
+        />
+      ))}
+    </>
+  );
+}
+
+// ============================================================================
 // Main Scene Preview Component
 // ============================================================================
 
 export interface ScenePreviewProps {
   className?: string;
+  /** Use legacy single-object mode (for backward compatibility) */
+  legacyMode?: boolean;
 }
 
-export function ScenePreview({ className = '' }: ScenePreviewProps) {
+export function ScenePreview({ className = '', legacyMode = false }: ScenePreviewProps) {
   const meshUrl = useComposerStore((state) => state.meshUrl);
   const backgroundUrl = useComposerStore((state) => state.backgroundUrl);
   const camera = useComposerStore((state) => state.camera);
+  const objects = useComposerStore((state) => state.objects);
+  const selectedObjectId = useComposerStore((state) => state.selectedObjectId);
 
   return (
     <div className={`relative w-full h-full min-h-[400px] bg-neutral-900 rounded-lg overflow-hidden ${className}`}>
@@ -239,7 +305,11 @@ export function ScenePreview({ className = '' }: ScenePreviewProps) {
         <SceneLighting />
 
         <Suspense fallback={<LoadingFallback />}>
-          <SceneObject url={meshUrl} />
+          {legacyMode ? (
+            <LegacySceneObject url={meshUrl} />
+          ) : (
+            <MultiObjectRenderer />
+          )}
           <BackgroundPlane url={backgroundUrl} />
         </Suspense>
 
@@ -274,6 +344,12 @@ export function ScenePreview({ className = '' }: ScenePreviewProps) {
 
       {/* Overlay info */}
       <div className="absolute bottom-2 left-2 text-xs text-neutral-500">
+        {objects.length > 1 && (
+          <span className="mr-2 text-indigo-400">
+            {objects.length} objects
+            {selectedObjectId && ` | Selected: ${objects.find(o => o.id === selectedObjectId)?.name}`}
+          </span>
+        )}
         Drag to orbit | Scroll to zoom | Shift+drag to pan
       </div>
     </div>

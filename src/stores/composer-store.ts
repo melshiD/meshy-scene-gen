@@ -1,6 +1,13 @@
 import { create } from 'zustand';
-import type { Vec3, LightingPreset, ScenePreset } from '@/types';
+import type { Vec3, LightingPreset, ScenePreset, SceneObject } from '@/types';
+import { createSceneObject } from '@/types';
 import { getDefaultPreset, getPreset } from '@/lib/presets';
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+export const MAX_OBJECTS = 5;
 
 // ============================================================================
 // State Types
@@ -37,7 +44,11 @@ export interface ComposerState {
   // Prompt inputs
   prompt: PromptState;
 
-  // Scene configuration
+  // Multi-object scene configuration
+  objects: SceneObject[];
+  selectedObjectId: string | null;
+
+  // Legacy single object (computed from selected)
   object: ObjectState;
   camera: CameraState;
   lighting: LightingState;
@@ -59,7 +70,15 @@ export interface ComposerActions {
   setObjectPrompt: (prompt: string) => void;
   setBackgroundPrompt: (prompt: string) => void;
 
-  // Object actions
+  // Multi-object actions
+  addObject: (name?: string) => void;
+  removeObject: (id: string) => void;
+  duplicateObject: (id: string) => void;
+  updateObject: (id: string, updates: Partial<SceneObject>) => void;
+  selectObject: (id: string | null) => void;
+  reorderObjects: (fromIndex: number, toIndex: number) => void;
+
+  // Legacy object actions (operate on selected object)
   setObjectPosition: (position: Vec3) => void;
   setObjectScale: (scale: number) => void;
   setObjectRotation: (rotation: Vec3) => void;
@@ -94,6 +113,24 @@ export interface ComposerActions {
 
 const defaultPreset = getDefaultPreset();
 
+/** Generate unique ID for objects */
+function generateObjectId(): string {
+  return `obj_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Create initial default object */
+function createDefaultObject(name: string = 'Object 1'): SceneObject {
+  return createSceneObject({
+    id: generateObjectId(),
+    name,
+    position: { ...defaultPreset.object.position },
+    scale: defaultPreset.object.scale,
+    rotation: { ...defaultPreset.object.rotation },
+  });
+}
+
+const defaultObject = createDefaultObject();
+
 const initialState: ComposerState = {
   prompt: {
     mode: 'single',
@@ -101,6 +138,10 @@ const initialState: ComposerState = {
     object: '',
     background: '',
   },
+  // Multi-object state
+  objects: [defaultObject],
+  selectedObjectId: defaultObject.id,
+  // Legacy single object state (computed from selected)
   object: {
     position: { ...defaultPreset.object.position },
     scale: defaultPreset.object.scale,
@@ -127,6 +168,29 @@ const initialState: ComposerState = {
 // Store
 // ============================================================================
 
+/** Helper to get the selected object from state */
+function getSelectedObject(state: ComposerState): SceneObject | null {
+  if (!state.selectedObjectId) return null;
+  return state.objects.find((obj) => obj.id === state.selectedObjectId) ?? null;
+}
+
+/** Helper to sync legacy object state from selected object */
+function syncLegacyObjectState(objects: SceneObject[], selectedId: string | null): ObjectState {
+  const selected = objects.find((obj) => obj.id === selectedId);
+  if (!selected) {
+    return {
+      position: { ...defaultPreset.object.position },
+      scale: defaultPreset.object.scale,
+      rotation: { ...defaultPreset.object.rotation },
+    };
+  }
+  return {
+    position: { ...selected.position },
+    scale: selected.scale,
+    rotation: { ...selected.rotation },
+  };
+}
+
 export const useComposerStore = create<ComposerState & ComposerActions>(
   (set, get) => ({
     ...initialState,
@@ -144,15 +208,143 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
     setBackgroundPrompt: (background) =>
       set({ prompt: { ...get().prompt, background } }),
 
-    // Object actions
-    setObjectPosition: (position) =>
-      set({ object: { ...get().object, position }, isDirty: true }),
+    // Multi-object actions
+    addObject: (name) => {
+      const state = get();
+      if (state.objects.length >= MAX_OBJECTS) return;
 
-    setObjectScale: (scale) =>
-      set({ object: { ...get().object, scale }, isDirty: true }),
+      const objectNumber = state.objects.length + 1;
+      const newObject = createSceneObject({
+        id: generateObjectId(),
+        name: name ?? `Object ${objectNumber}`,
+      });
 
-    setObjectRotation: (rotation) =>
-      set({ object: { ...get().object, rotation }, isDirty: true }),
+      const newObjects = [...state.objects, newObject];
+      set({
+        objects: newObjects,
+        selectedObjectId: newObject.id,
+        object: syncLegacyObjectState(newObjects, newObject.id),
+        isDirty: true,
+      });
+    },
+
+    removeObject: (id) => {
+      const state = get();
+      if (state.objects.length <= 1) return; // Keep at least one object
+
+      const newObjects = state.objects.filter((obj) => obj.id !== id);
+      const newSelectedId =
+        state.selectedObjectId === id
+          ? newObjects[0]?.id ?? null
+          : state.selectedObjectId;
+
+      set({
+        objects: newObjects,
+        selectedObjectId: newSelectedId,
+        object: syncLegacyObjectState(newObjects, newSelectedId),
+        isDirty: true,
+      });
+    },
+
+    duplicateObject: (id) => {
+      const state = get();
+      if (state.objects.length >= MAX_OBJECTS) return;
+
+      const objectToDuplicate = state.objects.find((obj) => obj.id === id);
+      if (!objectToDuplicate) return;
+
+      const duplicatedObject = createSceneObject({
+        ...objectToDuplicate,
+        id: generateObjectId(),
+        name: `${objectToDuplicate.name} (copy)`,
+        // Offset position slightly
+        position: {
+          x: objectToDuplicate.position.x + 0.5,
+          y: objectToDuplicate.position.y,
+          z: objectToDuplicate.position.z,
+        },
+      });
+
+      const index = state.objects.findIndex((obj) => obj.id === id);
+      const newObjects = [
+        ...state.objects.slice(0, index + 1),
+        duplicatedObject,
+        ...state.objects.slice(index + 1),
+      ];
+
+      set({
+        objects: newObjects,
+        selectedObjectId: duplicatedObject.id,
+        object: syncLegacyObjectState(newObjects, duplicatedObject.id),
+        isDirty: true,
+      });
+    },
+
+    updateObject: (id, updates) => {
+      const state = get();
+      const newObjects = state.objects.map((obj) =>
+        obj.id === id ? { ...obj, ...updates } : obj
+      );
+
+      set({
+        objects: newObjects,
+        object: syncLegacyObjectState(newObjects, state.selectedObjectId),
+        isDirty: true,
+      });
+    },
+
+    selectObject: (id) => {
+      const state = get();
+      if (id !== null && !state.objects.find((obj) => obj.id === id)) return;
+
+      set({
+        selectedObjectId: id,
+        object: syncLegacyObjectState(state.objects, id),
+      });
+    },
+
+    reorderObjects: (fromIndex, toIndex) => {
+      const state = get();
+      if (
+        fromIndex < 0 ||
+        fromIndex >= state.objects.length ||
+        toIndex < 0 ||
+        toIndex >= state.objects.length
+      ) {
+        return;
+      }
+
+      const newObjects = [...state.objects];
+      const [removed] = newObjects.splice(fromIndex, 1);
+      newObjects.splice(toIndex, 0, removed);
+
+      set({
+        objects: newObjects,
+        isDirty: true,
+      });
+    },
+
+    // Legacy object actions (operate on selected object)
+    setObjectPosition: (position) => {
+      const state = get();
+      if (!state.selectedObjectId) return;
+
+      get().updateObject(state.selectedObjectId, { position });
+    },
+
+    setObjectScale: (scale) => {
+      const state = get();
+      if (!state.selectedObjectId) return;
+
+      get().updateObject(state.selectedObjectId, { scale });
+    },
+
+    setObjectRotation: (rotation) => {
+      const state = get();
+      if (!state.selectedObjectId) return;
+
+      get().updateObject(state.selectedObjectId, { rotation });
+    },
 
     // Camera actions
     setCameraPosition: (position) =>
@@ -182,8 +374,22 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
       }
     },
 
-    applyPreset: (preset) =>
+    applyPreset: (preset) => {
+      const state = get();
+      // Update selected object with preset values
+      const newObjects = state.objects.map((obj) =>
+        obj.id === state.selectedObjectId
+          ? {
+              ...obj,
+              position: { ...preset.object.position },
+              scale: preset.object.scale,
+              rotation: { ...preset.object.rotation },
+            }
+          : obj
+      );
+
       set({
+        objects: newObjects,
         object: {
           position: { ...preset.object.position },
           scale: preset.object.scale,
@@ -201,7 +407,8 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
         },
         currentPresetId: preset.id,
         isDirty: false,
-      }),
+      });
+    },
 
     resetToPreset: () => {
       const { currentPresetId } = get();
@@ -211,12 +418,27 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
     },
 
     // Scene actions
-    setMeshUrl: (meshUrl) => set({ meshUrl }),
+    setMeshUrl: (meshUrl) => {
+      const state = get();
+      // Also update selected object's meshUrl
+      if (state.selectedObjectId) {
+        get().updateObject(state.selectedObjectId, { meshUrl });
+      }
+      set({ meshUrl });
+    },
+
     setBackgroundUrl: (backgroundUrl) => set({ backgroundUrl }),
     setIsGenerating: (isGenerating) => set({ isGenerating }),
 
     // Reset
-    reset: () => set(initialState),
+    reset: () => {
+      const newDefaultObject = createDefaultObject();
+      set({
+        ...initialState,
+        objects: [newDefaultObject],
+        selectedObjectId: newDefaultObject.id,
+      });
+    },
   })
 );
 
@@ -235,3 +457,17 @@ export const selectIsGenerating = (state: ComposerState) => state.isGenerating;
 export const selectMeshUrl = (state: ComposerState) => state.meshUrl;
 export const selectBackgroundUrl = (state: ComposerState) =>
   state.backgroundUrl;
+
+// Multi-object selectors
+export const selectObjects = (state: ComposerState) => state.objects;
+export const selectSelectedObjectId = (state: ComposerState) =>
+  state.selectedObjectId;
+export const selectSelectedObject = (state: ComposerState): SceneObject | null => {
+  if (!state.selectedObjectId) return null;
+  return state.objects.find((obj) => obj.id === state.selectedObjectId) ?? null;
+};
+export const selectObjectCount = (state: ComposerState) => state.objects.length;
+export const selectCanAddObject = (state: ComposerState) =>
+  state.objects.length < MAX_OBJECTS;
+export const selectCanRemoveObject = (state: ComposerState) =>
+  state.objects.length > 1;

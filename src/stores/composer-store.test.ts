@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useComposerStore } from './composer-store';
+import { useComposerStore, MAX_OBJECTS } from './composer-store';
 
 describe('ComposerStore', () => {
   beforeEach(() => {
@@ -218,6 +218,282 @@ describe('ComposerStore', () => {
       expect(state.meshUrl).toBe(null);
       expect(state.isGenerating).toBe(false);
       expect(state.isDirty).toBe(false);
+    });
+  });
+
+  // ==========================================================================
+  // Multi-Object Tests
+  // ==========================================================================
+
+  describe('multi-object initial state', () => {
+    it('should have one default object', () => {
+      const state = useComposerStore.getState();
+      expect(state.objects.length).toBe(1);
+      expect(state.objects[0].name).toBe('Object 1');
+    });
+
+    it('should have selected object ID matching first object', () => {
+      const state = useComposerStore.getState();
+      expect(state.selectedObjectId).toBe(state.objects[0].id);
+    });
+
+    it('should sync legacy object state with selected object', () => {
+      const state = useComposerStore.getState();
+      const selectedObject = state.objects[0];
+      expect(state.object.position).toEqual(selectedObject.position);
+      expect(state.object.scale).toBe(selectedObject.scale);
+      expect(state.object.rotation).toEqual(selectedObject.rotation);
+    });
+  });
+
+  describe('addObject', () => {
+    it('should add a new object with default name', () => {
+      useComposerStore.getState().addObject();
+      const state = useComposerStore.getState();
+      expect(state.objects.length).toBe(2);
+      expect(state.objects[1].name).toBe('Object 2');
+    });
+
+    it('should add a new object with custom name', () => {
+      useComposerStore.getState().addObject('My Custom Object');
+      const state = useComposerStore.getState();
+      expect(state.objects[1].name).toBe('My Custom Object');
+    });
+
+    it('should select the newly added object', () => {
+      useComposerStore.getState().addObject();
+      const state = useComposerStore.getState();
+      expect(state.selectedObjectId).toBe(state.objects[1].id);
+    });
+
+    it('should mark state as dirty', () => {
+      useComposerStore.getState().addObject();
+      expect(useComposerStore.getState().isDirty).toBe(true);
+    });
+
+    it('should not add more than MAX_OBJECTS', () => {
+      for (let i = 0; i < MAX_OBJECTS + 2; i++) {
+        useComposerStore.getState().addObject();
+      }
+      expect(useComposerStore.getState().objects.length).toBe(MAX_OBJECTS);
+    });
+  });
+
+  describe('removeObject', () => {
+    beforeEach(() => {
+      useComposerStore.getState().addObject('Object 2');
+      useComposerStore.getState().addObject('Object 3');
+    });
+
+    it('should remove the specified object', () => {
+      const state = useComposerStore.getState();
+      const objectToRemove = state.objects[1];
+      useComposerStore.getState().removeObject(objectToRemove.id);
+
+      const newState = useComposerStore.getState();
+      expect(newState.objects.length).toBe(2);
+      expect(newState.objects.find(o => o.id === objectToRemove.id)).toBeUndefined();
+    });
+
+    it('should select first object when selected object is removed', () => {
+      const state = useComposerStore.getState();
+      const selectedId = state.selectedObjectId;
+      useComposerStore.getState().removeObject(selectedId!);
+
+      const newState = useComposerStore.getState();
+      expect(newState.selectedObjectId).toBe(newState.objects[0].id);
+    });
+
+    it('should not remove the last object', () => {
+      useComposerStore.getState().reset();
+      const state = useComposerStore.getState();
+      useComposerStore.getState().removeObject(state.objects[0].id);
+      expect(useComposerStore.getState().objects.length).toBe(1);
+    });
+
+    it('should mark state as dirty', () => {
+      const state = useComposerStore.getState();
+      useComposerStore.getState().removeObject(state.objects[1].id);
+      expect(useComposerStore.getState().isDirty).toBe(true);
+    });
+  });
+
+  describe('duplicateObject', () => {
+    it('should create a copy of the specified object', () => {
+      const state = useComposerStore.getState();
+      const originalObject = state.objects[0];
+      useComposerStore.getState().duplicateObject(originalObject.id);
+
+      const newState = useComposerStore.getState();
+      expect(newState.objects.length).toBe(2);
+      expect(newState.objects[1].name).toBe(`${originalObject.name} (copy)`);
+    });
+
+    it('should offset the duplicated object position', () => {
+      const state = useComposerStore.getState();
+      const originalObject = state.objects[0];
+      useComposerStore.getState().duplicateObject(originalObject.id);
+
+      const newState = useComposerStore.getState();
+      expect(newState.objects[1].position.x).toBe(originalObject.position.x + 0.5);
+    });
+
+    it('should select the duplicated object', () => {
+      const state = useComposerStore.getState();
+      useComposerStore.getState().duplicateObject(state.objects[0].id);
+
+      const newState = useComposerStore.getState();
+      expect(newState.selectedObjectId).toBe(newState.objects[1].id);
+    });
+
+    it('should not duplicate when at MAX_OBJECTS', () => {
+      for (let i = 0; i < MAX_OBJECTS - 1; i++) {
+        useComposerStore.getState().addObject();
+      }
+      const state = useComposerStore.getState();
+      useComposerStore.getState().duplicateObject(state.objects[0].id);
+      expect(useComposerStore.getState().objects.length).toBe(MAX_OBJECTS);
+    });
+  });
+
+  describe('updateObject', () => {
+    it('should update specified object properties', () => {
+      const state = useComposerStore.getState();
+      const objectId = state.objects[0].id;
+
+      useComposerStore.getState().updateObject(objectId, {
+        name: 'Updated Name',
+        scale: 2.5,
+      });
+
+      const updatedObject = useComposerStore.getState().objects[0];
+      expect(updatedObject.name).toBe('Updated Name');
+      expect(updatedObject.scale).toBe(2.5);
+    });
+
+    it('should sync legacy object state when selected object is updated', () => {
+      const state = useComposerStore.getState();
+      useComposerStore.getState().updateObject(state.selectedObjectId!, {
+        scale: 1.5,
+      });
+
+      expect(useComposerStore.getState().object.scale).toBe(1.5);
+    });
+
+    it('should mark state as dirty', () => {
+      const state = useComposerStore.getState();
+      useComposerStore.getState().updateObject(state.objects[0].id, { name: 'Test' });
+      expect(useComposerStore.getState().isDirty).toBe(true);
+    });
+  });
+
+  describe('selectObject', () => {
+    beforeEach(() => {
+      useComposerStore.getState().addObject('Object 2');
+    });
+
+    it('should select the specified object', () => {
+      const state = useComposerStore.getState();
+      const firstObjectId = state.objects[0].id;
+      useComposerStore.getState().selectObject(firstObjectId);
+      expect(useComposerStore.getState().selectedObjectId).toBe(firstObjectId);
+    });
+
+    it('should sync legacy object state with newly selected object', () => {
+      const state = useComposerStore.getState();
+      // Modify first object
+      useComposerStore.getState().updateObject(state.objects[0].id, {
+        scale: 2.0,
+      });
+
+      // Select second object
+      useComposerStore.getState().selectObject(state.objects[1].id);
+
+      // Legacy object state should reflect second object
+      expect(useComposerStore.getState().object.scale).toBe(1); // Default scale
+    });
+
+    it('should not select non-existent object', () => {
+      const state = useComposerStore.getState();
+      const originalSelectedId = state.selectedObjectId;
+      useComposerStore.getState().selectObject('non-existent-id');
+      expect(useComposerStore.getState().selectedObjectId).toBe(originalSelectedId);
+    });
+
+    it('should allow selecting null', () => {
+      useComposerStore.getState().selectObject(null);
+      expect(useComposerStore.getState().selectedObjectId).toBe(null);
+    });
+  });
+
+  describe('reorderObjects', () => {
+    beforeEach(() => {
+      useComposerStore.getState().addObject('Object 2');
+      useComposerStore.getState().addObject('Object 3');
+    });
+
+    it('should move object from one index to another', () => {
+      const state = useComposerStore.getState();
+      const firstObjectId = state.objects[0].id;
+
+      useComposerStore.getState().reorderObjects(0, 2);
+
+      const newState = useComposerStore.getState();
+      expect(newState.objects[2].id).toBe(firstObjectId);
+    });
+
+    it('should mark state as dirty', () => {
+      useComposerStore.getState().reorderObjects(0, 1);
+      expect(useComposerStore.getState().isDirty).toBe(true);
+    });
+
+    it('should not reorder with invalid indices', () => {
+      const state = useComposerStore.getState();
+      const originalOrder = state.objects.map(o => o.id);
+
+      useComposerStore.getState().reorderObjects(-1, 1);
+      useComposerStore.getState().reorderObjects(0, 10);
+
+      const newOrder = useComposerStore.getState().objects.map(o => o.id);
+      expect(newOrder).toEqual(originalOrder);
+    });
+  });
+
+  describe('legacy object actions with multi-object', () => {
+    it('setObjectPosition should update selected object', () => {
+      const state = useComposerStore.getState();
+      const selectedId = state.selectedObjectId!;
+
+      useComposerStore.getState().setObjectPosition({ x: 1, y: 2, z: 3 });
+
+      const selectedObject = useComposerStore.getState().objects.find(
+        o => o.id === selectedId
+      );
+      expect(selectedObject?.position).toEqual({ x: 1, y: 2, z: 3 });
+    });
+
+    it('setObjectScale should update selected object', () => {
+      const state = useComposerStore.getState();
+      const selectedId = state.selectedObjectId!;
+
+      useComposerStore.getState().setObjectScale(2.0);
+
+      const selectedObject = useComposerStore.getState().objects.find(
+        o => o.id === selectedId
+      );
+      expect(selectedObject?.scale).toBe(2.0);
+    });
+
+    it('setObjectRotation should update selected object', () => {
+      const state = useComposerStore.getState();
+      const selectedId = state.selectedObjectId!;
+
+      useComposerStore.getState().setObjectRotation({ x: 0.5, y: 1.0, z: 0 });
+
+      const selectedObject = useComposerStore.getState().objects.find(
+        o => o.id === selectedId
+      );
+      expect(selectedObject?.rotation).toEqual({ x: 0.5, y: 1.0, z: 0 });
     });
   });
 });
