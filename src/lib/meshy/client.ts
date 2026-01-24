@@ -1,277 +1,336 @@
-/**
- * Meshy API Client
- *
- * Handles text-to-3D mesh generation via Meshy.ai API
- * https://docs.meshy.ai/api
- */
-
 import type {
   MeshyTask,
   MeshyTaskStatus,
-  MeshyArtStyle,
   MeshyCreateTaskRequest,
+  MeshyArtStyle,
 } from '@/types';
 
 // ============================================================================
-// Types
+// Configuration
 // ============================================================================
 
-export interface MeshyClientConfig {
-  apiKey: string;
-  baseUrl?: string;
+const MESHY_API_BASE = 'https://api.meshy.ai/v2';
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const DEFAULT_MAX_POLL_TIME_MS = 300000; // 5 minutes
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_INITIAL_DELAY_MS = 1000;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+export class MeshyError extends Error {
+  constructor(
+    message: string,
+    public readonly code: MeshyErrorCode,
+    public readonly statusCode?: number,
+    public readonly taskId?: string
+  ) {
+    super(message);
+    this.name = 'MeshyError';
+  }
 }
 
-export interface CreateTaskOptions {
+export type MeshyErrorCode =
+  | 'API_KEY_MISSING'
+  | 'API_ERROR'
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT'
+  | 'TASK_FAILED'
+  | 'TASK_EXPIRED'
+  | 'INVALID_RESPONSE'
+  | 'MAX_RETRIES_EXCEEDED';
+
+// ============================================================================
+// Retry Logic with Exponential Backoff
+// ============================================================================
+
+interface RetryOptions {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  shouldRetry: (error: unknown) => boolean;
+}
+
+const DEFAULT_RETRY_OPTIONS: RetryOptions = {
+  maxRetries: DEFAULT_MAX_RETRIES,
+  initialDelayMs: DEFAULT_INITIAL_DELAY_MS,
+  maxDelayMs: 30000,
+  shouldRetry: (error: unknown): boolean => {
+    if (error instanceof MeshyError) {
+      // Retry on network errors and 5xx status codes
+      return (
+        error.code === 'NETWORK_ERROR' ||
+        (error.statusCode !== undefined && error.statusCode >= 500)
+      );
+    }
+    return false;
+  },
+};
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: Partial<RetryOptions> = {}
+): Promise<T> {
+  const opts = { ...DEFAULT_RETRY_OPTIONS, ...options };
+  let lastError: unknown;
+  let delay = opts.initialDelayMs;
+
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt === opts.maxRetries || !opts.shouldRetry(error)) {
+        throw error;
+      }
+
+      // Exponential backoff with jitter
+      const jitter = Math.random() * 0.3 + 0.85; // 0.85-1.15
+      await sleep(delay * jitter);
+      delay = Math.min(delay * 2, opts.maxDelayMs);
+    }
+  }
+
+  throw new MeshyError(
+    'Max retries exceeded',
+    'MAX_RETRIES_EXCEEDED',
+    undefined,
+    undefined
+  );
+}
+
+// ============================================================================
+// API Client
+// ============================================================================
+
+function getApiKey(): string {
+  const apiKey = process.env.MESHY_API_KEY;
+  if (!apiKey) {
+    throw new MeshyError(
+      'MESHY_API_KEY environment variable is not set',
+      'API_KEY_MISSING'
+    );
+  }
+  return apiKey;
+}
+
+async function meshyFetch<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const apiKey = getApiKey();
+  const url = `${MESHY_API_BASE}${endpoint}`;
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      let message = `Meshy API error: ${response.status} ${response.statusText}`;
+
+      try {
+        const parsed = JSON.parse(errorBody);
+        if (parsed.message) {
+          message = parsed.message;
+        }
+      } catch {
+        // Use default message if parsing fails
+      }
+
+      throw new MeshyError(message, 'API_ERROR', response.status);
+    }
+
+    const data = await response.json();
+    return data as T;
+  } catch (error) {
+    if (error instanceof MeshyError) {
+      throw error;
+    }
+
+    // Network or parsing error
+    throw new MeshyError(
+      error instanceof Error ? error.message : 'Network request failed',
+      'NETWORK_ERROR'
+    );
+  }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+export interface CreateMeshTaskOptions {
   prompt: string;
   artStyle?: MeshyArtStyle;
   negativePrompt?: string;
   mode?: 'preview' | 'refine';
 }
 
-export interface PollOptions {
-  /** Polling interval in ms (default: 5000) */
-  interval?: number;
-  /** Max wait time in ms (default: 300000 = 5 minutes) */
-  timeout?: number;
-  /** Callback on progress update */
-  onProgress?: (progress: number, status: MeshyTaskStatus) => void;
+/**
+ * Create a new text-to-3D mesh generation task
+ */
+export async function createMeshTask(
+  options: CreateMeshTaskOptions
+): Promise<MeshyTask> {
+  const { prompt, artStyle = 'realistic', negativePrompt, mode = 'preview' } = options;
+
+  const requestBody: MeshyCreateTaskRequest = {
+    mode,
+    prompt,
+    art_style: artStyle,
+    ...(negativePrompt && { negative_prompt: negativePrompt }),
+  };
+
+  return withRetry(() =>
+    meshyFetch<MeshyTask>('/text-to-3d', {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    })
+  );
 }
-
-export interface MeshyError extends Error {
-  statusCode?: number;
-  response?: unknown;
-}
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-const DEFAULT_BASE_URL = 'https://api.meshy.ai/v2';
-const DEFAULT_POLL_INTERVAL = 5000;
-const DEFAULT_POLL_TIMEOUT = 300000;
-
-// ============================================================================
-// Client Implementation
-// ============================================================================
 
 /**
- * Creates a Meshy API client instance
+ * Get the current status of a mesh task
  */
-export function createMeshyClient(config: MeshyClientConfig): MeshyClient {
-  return new MeshyClient(config);
+export async function getMeshTaskStatus(taskId: string): Promise<MeshyTask> {
+  return withRetry(() => meshyFetch<MeshyTask>(`/text-to-3d/${taskId}`));
 }
 
-export class MeshyClient {
-  private apiKey: string;
-  private baseUrl: string;
+export interface WaitForMeshOptions {
+  pollIntervalMs?: number;
+  maxWaitTimeMs?: number;
+  onProgress?: (task: MeshyTask) => void;
+}
 
-  constructor(config: MeshyClientConfig) {
-    if (!config.apiKey) {
-      throw new Error('Meshy API key is required');
+/**
+ * Wait for a mesh task to complete, polling at regular intervals
+ */
+export async function waitForMesh(
+  taskId: string,
+  options: WaitForMeshOptions = {}
+): Promise<MeshyTask> {
+  const {
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    maxWaitTimeMs = DEFAULT_MAX_POLL_TIME_MS,
+    onProgress,
+  } = options;
+
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitTimeMs) {
+    const task = await getMeshTaskStatus(taskId);
+
+    if (onProgress) {
+      onProgress(task);
     }
-    this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
-  }
 
-  /**
-   * Create a text-to-3D task
-   */
-  async createTask(options: CreateTaskOptions): Promise<MeshyTask> {
-    const body: MeshyCreateTaskRequest = {
-      mode: options.mode ?? 'preview',
-      prompt: options.prompt,
-      art_style: options.artStyle ?? 'realistic',
-      negative_prompt: options.negativePrompt,
-    };
-
-    const response = await this.request<{ result: string }>(
-      '/text-to-3d',
-      'POST',
-      body
-    );
-
-    // API returns { result: taskId }
-    return this.getTask(response.result);
-  }
-
-  /**
-   * Get task status and details
-   */
-  async getTask(taskId: string): Promise<MeshyTask> {
-    return this.request<MeshyTask>(`/text-to-3d/${taskId}`, 'GET');
-  }
-
-  /**
-   * Poll task until completion or failure
-   */
-  async pollUntilComplete(
-    taskId: string,
-    options: PollOptions = {}
-  ): Promise<MeshyTask> {
-    const interval = options.interval ?? DEFAULT_POLL_INTERVAL;
-    const timeout = options.timeout ?? DEFAULT_POLL_TIMEOUT;
-    const startTime = Date.now();
-
-    while (true) {
-      const task = await this.getTask(taskId);
-
-      if (options.onProgress) {
-        options.onProgress(task.progress ?? 0, task.status);
-      }
-
-      if (task.status === 'SUCCEEDED') {
+    switch (task.status) {
+      case 'SUCCEEDED':
         return task;
-      }
 
-      if (task.status === 'FAILED') {
-        const error = new Error(
-          task.task_error?.message ?? 'Meshy task failed'
-        ) as MeshyError;
-        error.response = task;
-        throw error;
-      }
+      case 'FAILED':
+        throw new MeshyError(
+          task.task_error?.message ?? 'Mesh generation failed',
+          'TASK_FAILED',
+          undefined,
+          taskId
+        );
 
-      if (task.status === 'EXPIRED') {
-        const error = new Error('Meshy task expired') as MeshyError;
-        error.response = task;
-        throw error;
-      }
+      case 'EXPIRED':
+        throw new MeshyError(
+          'Mesh task expired before completion',
+          'TASK_EXPIRED',
+          undefined,
+          taskId
+        );
 
-      if (Date.now() - startTime > timeout) {
-        const error = new Error(
-          `Meshy task polling timed out after ${timeout}ms`
-        ) as MeshyError;
-        error.response = task;
-        throw error;
-      }
+      case 'PENDING':
+      case 'IN_PROGRESS':
+        // Continue polling
+        await sleep(pollIntervalMs);
+        break;
 
-      await sleep(interval);
+      default:
+        throw new MeshyError(
+          `Unknown task status: ${task.status}`,
+          'INVALID_RESPONSE',
+          undefined,
+          taskId
+        );
     }
   }
 
-  /**
-   * Create task and poll until complete (convenience method)
-   */
-  async generateMesh(
-    options: CreateTaskOptions,
-    pollOptions?: PollOptions
-  ): Promise<MeshyTask> {
-    const task = await this.createTask(options);
-    return this.pollUntilComplete(task.id, pollOptions);
-  }
+  throw new MeshyError(
+    `Mesh generation timed out after ${maxWaitTimeMs}ms`,
+    'TIMEOUT',
+    undefined,
+    taskId
+  );
+}
 
-  /**
-   * Refine an existing preview task to higher quality
-   */
-  async refineTask(previewTaskId: string): Promise<MeshyTask> {
-    const response = await this.request<{ result: string }>(
-      '/text-to-3d',
-      'POST',
-      {
-        mode: 'refine',
-        preview_task_id: previewTaskId,
-      }
+export type MeshFormat = 'glb' | 'fbx' | 'usdz' | 'obj';
+
+/**
+ * Get the URL for a completed mesh in the specified format
+ */
+export function getMeshUrl(task: MeshyTask, format: MeshFormat = 'glb'): string {
+  if (task.status !== 'SUCCEEDED') {
+    throw new MeshyError(
+      `Cannot get mesh URL: task status is ${task.status}, expected SUCCEEDED`,
+      'INVALID_RESPONSE',
+      undefined,
+      task.id
     );
-
-    return this.getTask(response.result);
   }
 
-  /**
-   * List recent tasks
-   */
-  async listTasks(
-    options: { pageNum?: number; pageSize?: number } = {}
-  ): Promise<MeshyTask[]> {
-    const params = new URLSearchParams();
-    if (options.pageNum) params.set('pageNum', String(options.pageNum));
-    if (options.pageSize) params.set('pageSize', String(options.pageSize));
-
-    const query = params.toString();
-    const endpoint = query ? `/text-to-3d?${query}` : '/text-to-3d';
-
-    return this.request<MeshyTask[]>(endpoint, 'GET');
+  if (!task.model_urls) {
+    throw new MeshyError(
+      'Task succeeded but model_urls is missing',
+      'INVALID_RESPONSE',
+      undefined,
+      task.id
+    );
   }
 
-  /**
-   * Make authenticated request to Meshy API
-   */
-  private async request<T>(
-    endpoint: string,
-    method: 'GET' | 'POST',
-    body?: unknown
-  ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`;
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
-    };
-
-    if (body) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    if (!response.ok) {
-      let errorMessage = `Meshy API error: ${response.status} ${response.statusText}`;
-      try {
-        const errorBody = await response.json();
-        if (errorBody.message) {
-          errorMessage = errorBody.message;
-        }
-      } catch {
-        // Ignore JSON parse errors
-      }
-
-      const error = new Error(errorMessage) as MeshyError;
-      error.statusCode = response.status;
-      throw error;
-    }
-
-    return response.json();
+  const url = task.model_urls[format];
+  if (!url) {
+    throw new MeshyError(
+      `Format ${format} not available for this mesh`,
+      'INVALID_RESPONSE',
+      undefined,
+      task.id
+    );
   }
-}
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return url;
 }
 
 /**
- * Create a client from environment variables
+ * Convenience function to create a mesh and wait for completion
  */
-export function createMeshyClientFromEnv(): MeshyClient {
-  const apiKey = process.env.MESHY_API_KEY;
-  if (!apiKey) {
-    throw new Error('MESHY_API_KEY environment variable is required');
-  }
-  return createMeshyClient({ apiKey });
-}
+export async function generateMesh(
+  options: CreateMeshTaskOptions & WaitForMeshOptions
+): Promise<MeshyTask> {
+  const { pollIntervalMs, maxWaitTimeMs, onProgress, ...createOptions } = options;
 
-/**
- * Check if a task is in a terminal state
- */
-export function isTaskComplete(status: MeshyTaskStatus): boolean {
-  return status === 'SUCCEEDED' || status === 'FAILED' || status === 'EXPIRED';
-}
+  const task = await createMeshTask(createOptions);
 
-/**
- * Check if a task is still processing
- */
-export function isTaskPending(status: MeshyTaskStatus): boolean {
-  return status === 'PENDING' || status === 'IN_PROGRESS';
-}
-
-/**
- * Get GLB URL from completed task
- */
-export function getGlbUrl(task: MeshyTask): string | null {
-  return task.model_urls?.glb ?? null;
+  return waitForMesh(task.id, {
+    pollIntervalMs,
+    maxWaitTimeMs,
+    onProgress,
+  });
 }
