@@ -33,6 +33,13 @@ export {
   validateRequest,
   type GenerateAssetResult,
   type GenerateAssetOptions,
+  // Multi-object generation
+  validateMultiObjectRequest,
+  isMultiObjectRequest,
+  startMultiObjectGenerationJob,
+  buildSceneObjectsFromJob,
+  getMultiObjectJobStatus,
+  type MultiObjectGenerateOptions,
 } from './generate-asset';
 
 // Job management
@@ -45,4 +52,24 @@ export {
   listJobs,
   deleteJob,
   clearJobs,
+  // Multi-object job management
+  createMultiObjectJob,
+  getMultiObjectJob,
+  updateMultiObjectJobStatus,
+  updateBackgroundStatus,
+  updateObjectStatus,
+  isMultiObjectJobComplete,
+  completeMultiObjectJob,
+  failMultiObjectJob,
+  listMultiObjectJobs,
+  deleteMultiObjectJob,
+  clearMultiObjectJobs,
+  getMultiObjectJobProgress,
 } from './job-store';
+
+// Layout utilities
+export {
+  calculateLayout,
+  applyLayoutToObjects,
+  getLayoutDefaults,
+} from './layout';

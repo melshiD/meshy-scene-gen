@@ -1,9 +1,34 @@
-import type { GenerateRequest, GeneratedAsset, SceneConfig } from '@/types';
-import { decomposePrompt, createManualPrompt, generateBackgroundWithMood } from '@/lib/image-gen';
+import type {
+  GenerateRequest,
+  GeneratedAsset,
+  SceneConfig,
+  MultiObjectGenerateRequest,
+  MultiObjectGenerationJob,
+  LayoutConfig,
+  SceneObject,
+  MeshyArtStyle,
+} from '@/types';
+import { decomposePrompt, createManualPrompt, generateBackgroundWithMood, generateBackground } from '@/lib/image-gen';
 import { generateMesh, getMeshUrl, type CreateMeshTaskOptions } from '@/lib/meshy';
 import { createScene, captureMultiResolution, type MultiCaptureResult } from '@/lib/scene';
 import { buildSceneConfig, getPreset, type SceneConfigOverrides } from '@/lib/presets';
-import { createJob, updateJobStatus, completeJob, failJob, getJob } from './job-store';
+import {
+  createJob,
+  updateJobStatus,
+  completeJob,
+  failJob,
+  getJob,
+  createMultiObjectJob,
+  getMultiObjectJob,
+  updateMultiObjectJobStatus,
+  updateBackgroundStatus,
+  updateObjectStatus,
+  isMultiObjectJobComplete,
+  completeMultiObjectJob,
+  failMultiObjectJob,
+  getMultiObjectJobProgress,
+} from './job-store';
+import { calculateLayout, getLayoutDefaults } from './layout';
 
 /**
  * Result of asset generation
@@ -295,4 +320,226 @@ export function validateRequest(request: GenerateRequest): { valid: boolean; err
   }
 
   return { valid: true };
+}
+
+// ============================================================================
+// Multi-Object Generation
+// ============================================================================
+
+/**
+ * Options for multi-object generation
+ */
+export interface MultiObjectGenerateOptions {
+  /** Callback for progress updates */
+  onProgress?: (jobId: string, progress: number) => void;
+  /** Scene dimensions */
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Validate a multi-object generate request
+ */
+export function validateMultiObjectRequest(
+  request: MultiObjectGenerateRequest
+): { valid: boolean; error?: string } {
+  if (!request.backgroundPrompt) {
+    return { valid: false, error: 'backgroundPrompt is required' };
+  }
+
+  if (!request.objects || request.objects.length === 0) {
+    return { valid: false, error: 'At least one object is required' };
+  }
+
+  const maxObjects = request.maxObjects ?? 10;
+  if (request.objects.length > maxObjects) {
+    return {
+      valid: false,
+      error: `Too many objects. Maximum is ${maxObjects}, got ${request.objects.length}`,
+    };
+  }
+
+  for (let i = 0; i < request.objects.length; i++) {
+    const obj = request.objects[i];
+    if (!obj.prompt || obj.prompt.trim() === '') {
+      return { valid: false, error: `Object at index ${i} has empty prompt` };
+    }
+  }
+
+  // Validate scene preset if provided
+  if (request.scenePreset && !getPreset(request.scenePreset)) {
+    return { valid: false, error: `Scene preset "${request.scenePreset}" not found` };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Check if a request is a multi-object request
+ */
+export function isMultiObjectRequest(
+  request: GenerateRequest | MultiObjectGenerateRequest
+): request is MultiObjectGenerateRequest {
+  return 'objects' in request && Array.isArray(request.objects);
+}
+
+/**
+ * Start a multi-object generation job
+ *
+ * Returns job ID immediately. Job runs in background.
+ * Background and all objects are generated in parallel.
+ */
+export async function startMultiObjectGenerationJob(
+  request: MultiObjectGenerateRequest,
+  options?: MultiObjectGenerateOptions
+): Promise<string> {
+  // Create job entry
+  const job = createMultiObjectJob({
+    backgroundPrompt: request.backgroundPrompt,
+    objects: request.objects,
+    layoutPreset: request.layoutPreset,
+    scenePreset: request.scenePreset,
+  });
+
+  // Start async generation (don't await)
+  processMultiObjectJob(job.id, request, options).catch((error) => {
+    console.error(`Multi-object job ${job.id} failed:`, error);
+    failMultiObjectJob(job.id, error instanceof Error ? error.message : 'Unknown error');
+  });
+
+  return job.id;
+}
+
+/**
+ * Process a multi-object generation job
+ */
+async function processMultiObjectJob(
+  jobId: string,
+  request: MultiObjectGenerateRequest,
+  options?: MultiObjectGenerateOptions
+): Promise<void> {
+  updateMultiObjectJobStatus(jobId, 'processing');
+
+  const job = getMultiObjectJob(jobId);
+  if (!job) {
+    throw new Error(`Job ${jobId} not found`);
+  }
+
+  try {
+    // Generate background and all objects in parallel
+    const backgroundPromise = generateBackgroundAsync(jobId, request.backgroundPrompt);
+    const objectPromises = request.objects.map((obj, index) =>
+      generateObjectAsync(jobId, `obj-${index}`, obj.prompt, obj.artStyle ?? 'realistic')
+    );
+
+    // Wait for all generations to complete
+    await Promise.all([backgroundPromise, ...objectPromises]);
+
+    // Check completion and update job status
+    if (isMultiObjectJobComplete(jobId)) {
+      completeMultiObjectJob(jobId);
+    }
+
+    options?.onProgress?.(jobId, getMultiObjectJobProgress(jobId));
+  } catch (error) {
+    failMultiObjectJob(jobId, error instanceof Error ? error.message : 'Unknown error');
+    throw error;
+  }
+}
+
+/**
+ * Generate background async with status tracking
+ */
+async function generateBackgroundAsync(jobId: string, prompt: string): Promise<string | null> {
+  updateBackgroundStatus(jobId, 'processing');
+
+  try {
+    const result = await generateBackground(prompt);
+    if (!result.success) {
+      updateBackgroundStatus(jobId, 'failed', undefined, result.error);
+      return null;
+    }
+    updateBackgroundStatus(jobId, 'completed', result.url);
+    return result.url;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Background generation failed';
+    updateBackgroundStatus(jobId, 'failed', undefined, message);
+    return null;
+  }
+}
+
+/**
+ * Generate a single object mesh async with status tracking
+ */
+async function generateObjectAsync(
+  jobId: string,
+  objectId: string,
+  prompt: string,
+  artStyle: MeshyArtStyle
+): Promise<string | null> {
+  updateObjectStatus(jobId, objectId, 'processing', 0);
+
+  try {
+    const meshTask = await generateMesh({
+      prompt,
+      artStyle,
+      mode: 'preview',
+      onProgress: (task) => {
+        updateObjectStatus(jobId, objectId, 'processing', task.progress ?? 0);
+      },
+    });
+
+    const meshUrl = getMeshUrl(meshTask, 'glb');
+    updateObjectStatus(jobId, objectId, 'completed', 100, meshUrl);
+    return meshUrl;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Mesh generation failed';
+    updateObjectStatus(jobId, objectId, 'failed', undefined, undefined, message);
+    return null;
+  }
+}
+
+/**
+ * Build scene objects from multi-object job result
+ */
+export function buildSceneObjectsFromJob(
+  job: MultiObjectGenerationJob,
+  layoutPreset?: LayoutConfig['preset']
+): SceneObject[] {
+  const layoutConfig: LayoutConfig = {
+    preset: layoutPreset ?? 'centered',
+    spacing: 1.0,
+    groundPlane: true,
+    centerPoint: { x: 0, y: 0, z: 0 },
+    radius: 2.0,
+    ...getLayoutDefaults(layoutPreset ?? 'centered'),
+  };
+
+  const positions = calculateLayout(job.objects.length, layoutConfig);
+
+  return job.objects.map((obj, index) => ({
+    id: obj.id,
+    name: `Object ${index + 1}`,
+    meshUrl: obj.meshUrl ?? null,
+    prompt: obj.prompt,
+    position: positions[index] ?? { x: 0, y: 0, z: 0 },
+    scale: 1,
+    rotation: { x: 0, y: 0, z: 0 },
+    visible: true,
+    locked: false,
+    status: obj.status,
+    progress: obj.progress,
+  }));
+}
+
+/**
+ * Get multi-object job status with computed progress
+ */
+export function getMultiObjectJobStatus(jobId: string): (MultiObjectGenerationJob & { progress: number }) | undefined {
+  const job = getMultiObjectJob(jobId);
+  if (!job) return undefined;
+  return {
+    ...job,
+    progress: getMultiObjectJobProgress(jobId),
+  };
 }
