@@ -41,4 +41,5 @@ next-env.d.ts
 Thumbs.db
 
 # Generated assets (local dev)
-/public/generated/
+/public/generated/*
+!/public/generated/README.md

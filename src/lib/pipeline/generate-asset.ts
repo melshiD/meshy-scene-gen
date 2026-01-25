@@ -12,6 +12,7 @@ import { decomposePrompt, createManualPrompt, generateBackgroundWithMood, genera
 import { generateMesh, getMeshUrl, type CreateMeshTaskOptions } from '@/lib/meshy';
 import { createScene, captureMultiResolution, type MultiCaptureResult } from '@/lib/scene';
 import { buildSceneConfig, getPreset, type SceneConfigOverrides } from '@/lib/presets';
+import { uploadCaptures, persistBackground, persistMesh } from '@/lib/storage';
 import {
   createJob,
   updateJobStatus,
@@ -257,34 +258,44 @@ async function processJob(
     // Parse prompts
     const { objectPrompt, backgroundPrompt, mood } = await parsePrompts(request);
 
-    // Generate assets
-    const { meshUrl, backgroundUrl } = await generateAssets(
+    // Generate assets (mesh and background in parallel)
+    const { meshUrl: tempMeshUrl, backgroundUrl: tempBackgroundUrl } = await generateAssets(
       objectPrompt,
       backgroundPrompt,
       mood,
       options
     );
 
-    // Build scene config
+    // Persist background and mesh to storage in parallel
+    // This ensures URLs remain valid after DALL-E/Meshy CDN expiry
+    const [persistentBackgroundUrl, persistentMeshUrl] = await Promise.all([
+      persistBackground(tempBackgroundUrl, jobId),
+      persistMesh(tempMeshUrl, jobId, 'glb'),
+    ]);
+
+    // Build scene config with persistent URLs
     const sceneConfig = buildSceneConfig(
       request.preset,
-      backgroundUrl,
-      meshUrl,
+      persistentBackgroundUrl,
+      persistentMeshUrl,
       request.overrides
     );
 
     // Compose and capture
     const captures = await composeAndCapture(sceneConfig, options);
 
-    // Store results as data URLs (in production, upload to storage and store URLs)
+    // Upload captures to persistent storage
+    const captureUrls = await uploadCaptures(captures, jobId);
+
+    // Complete job with persistent URLs
     completeJob(
       jobId,
       {
-        full: captures.full.dataUrl,
-        web: captures.web.dataUrl,
-        thumb: captures.thumb.dataUrl,
+        full: captureUrls.full,
+        web: captureUrls.web,
+        thumb: captureUrls.thumb,
       },
-      meshUrl
+      persistentMeshUrl
     );
   } catch (error) {
     failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
@@ -459,8 +470,11 @@ async function generateBackgroundAsync(jobId: string, prompt: string): Promise<s
       updateBackgroundStatus(jobId, 'failed', undefined, result.error);
       return null;
     }
-    updateBackgroundStatus(jobId, 'completed', result.url);
-    return result.url;
+
+    // Persist background to storage before DALL-E URL expires
+    const persistentUrl = await persistBackground(result.url, jobId);
+    updateBackgroundStatus(jobId, 'completed', persistentUrl);
+    return persistentUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Background generation failed';
     updateBackgroundStatus(jobId, 'failed', undefined, message);
@@ -489,9 +503,12 @@ async function generateObjectAsync(
       },
     });
 
-    const meshUrl = getMeshUrl(meshTask, 'glb');
-    updateObjectStatus(jobId, objectId, 'completed', 100, meshUrl);
-    return meshUrl;
+    const tempMeshUrl = getMeshUrl(meshTask, 'glb');
+
+    // Persist mesh to storage (use objectId in key for multi-object jobs)
+    const persistentMeshUrl = await persistMesh(tempMeshUrl, `${jobId}/${objectId}`, 'glb');
+    updateObjectStatus(jobId, objectId, 'completed', 100, persistentMeshUrl);
+    return persistentMeshUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Mesh generation failed';
     updateObjectStatus(jobId, objectId, 'failed', undefined, undefined, message);
