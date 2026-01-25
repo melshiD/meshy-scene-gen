@@ -255,6 +255,7 @@ export interface GeneratedAsset {
     thumb: string;  // 400x400 WebP
   };
   meshUrl?: string;
+  backgroundUrl?: string;  // Persisted background image URL
   error?: string;
   createdAt: Date;
   completedAt?: Date;

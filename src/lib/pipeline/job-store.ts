@@ -55,7 +55,7 @@ export function updateJobStatus(id: string, status: JobStatus): void {
 }
 
 /**
- * Update job with completion data
+ * Update job with completion data (full completion with captures)
  */
 export function completeJob(
   id: string,
@@ -67,6 +67,40 @@ export function completeJob(
     job.status = 'completed';
     job.assets = assets;
     job.meshUrl = meshUrl;
+    job.completedAt = new Date();
+  }
+}
+
+/**
+ * Mark server-side generation complete (assets ready, awaiting client capture)
+ *
+ * Sets status to 'processing' with meshUrl and backgroundUrl populated.
+ * Client should load these into Three.js and POST captures to /api/captures.
+ */
+export function completeServerSideJob(
+  id: string,
+  meshUrl: string,
+  backgroundUrl: string
+): void {
+  const job = jobs.get(id);
+  if (job) {
+    // Keep status as 'processing' - client still needs to capture
+    job.meshUrl = meshUrl;
+    job.backgroundUrl = backgroundUrl;
+  }
+}
+
+/**
+ * Add captures to a job and mark complete
+ */
+export function addCapturesAndComplete(
+  id: string,
+  assets: { full: string; web: string; thumb: string }
+): void {
+  const job = jobs.get(id);
+  if (job) {
+    job.status = 'completed';
+    job.assets = assets;
     job.completedAt = new Date();
   }
 }

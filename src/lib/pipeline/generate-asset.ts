@@ -10,13 +10,15 @@ import type {
 } from '@/types';
 import { decomposePrompt, createManualPrompt, generateBackgroundWithMood, generateBackground } from '@/lib/image-gen';
 import { generateMesh, getMeshUrl, type CreateMeshTaskOptions } from '@/lib/meshy';
-import { createScene, captureMultiResolution, type MultiCaptureResult } from '@/lib/scene';
+// NOTE: Scene composition (Three.js) happens client-side now
+// The server generates mesh + background, client loads them and captures
 import { buildSceneConfig, getPreset, type SceneConfigOverrides } from '@/lib/presets';
-import { uploadCaptures, persistBackground, persistMesh } from '@/lib/storage';
+import { persistBackground, persistMesh } from '@/lib/storage';
 import {
   createJob,
   updateJobStatus,
   completeJob,
+  completeServerSideJob,
   failJob,
   getJob,
   createMultiObjectJob,
@@ -32,12 +34,15 @@ import {
 import { calculateLayout, getLayoutDefaults } from './layout';
 
 /**
- * Result of asset generation
+ * Result of asset generation (server-side)
+ *
+ * Note: Captures are done client-side now. This returns the raw assets
+ * needed for the client to compose and capture the scene.
  */
 export interface GenerateAssetResult {
   jobId: string;
-  captures: MultiCaptureResult;
   meshUrl: string;
+  backgroundUrl: string;
   sceneConfig: SceneConfig;
 }
 
@@ -138,59 +143,25 @@ export async function generateAssets(
   return { meshUrl, backgroundUrl: bgResult.url };
 }
 
-/**
- * Compose the scene and capture images
- */
-export async function composeAndCapture(
-  sceneConfig: SceneConfig,
-  options?: Pick<GenerateAssetOptions, 'onProgress' | 'width' | 'height'>
-): Promise<MultiCaptureResult> {
-  const { onProgress, width = 2048, height = 2048 } = options ?? {};
-
-  console.log(`[PIPELINE] Stage start: scene composition (${width}x${height})`);
-  onProgress?.('scene', 0);
-
-  // Create the Three.js scene
-  const sceneResult = await createScene(sceneConfig, {
-    width,
-    height,
-    antialias: true,
-    shadows: true,
-  });
-
-  console.log('[PIPELINE] Three.js scene created');
-  onProgress?.('scene', 50);
-
-  try {
-    // Capture at multiple resolutions
-    console.log('[PIPELINE] Stage start: multi-resolution capture');
-    const captures = await captureMultiResolution(
-      sceneResult.renderer,
-      sceneResult.scene,
-      sceneResult.camera
-    );
-
-    console.log('[PIPELINE] Stage complete: scene capture');
-    onProgress?.('scene', 100);
-
-    return captures;
-  } finally {
-    // Clean up scene resources
-    console.log('[PIPELINE] Scene resources disposed');
-    sceneResult.dispose();
-  }
-}
+// NOTE: composeAndCapture has been removed from server-side
+// Scene composition and capture now happens client-side in the browser
+// where Three.js has access to WebGL and the DOM
 
 /**
- * Main orchestration function: Generate complete asset from request
+ * Main orchestration function: Generate assets from request
  *
- * Workflow:
+ * Server-side workflow:
  * 1. Parse prompts (decompose if single prompt)
  * 2. Generate mesh (Meshy) and background (DALL-E) in parallel
- * 3. Build scene config from preset + overrides
- * 4. Compose scene with Three.js
- * 5. Capture at multiple resolutions
- * 6. Return captures and metadata
+ * 3. Persist assets to storage
+ * 4. Build scene config from preset + overrides
+ * 5. Return URLs and config for client-side rendering
+ *
+ * Client-side (not in this function):
+ * - Load mesh and background into Three.js
+ * - Apply scene config
+ * - Capture at multiple resolutions
+ * - Upload captures
  */
 export async function generateAsset(
   request: GenerateRequest,
@@ -219,9 +190,6 @@ export async function generateAsset(
     request.overrides
   );
 
-  // Step 4-5: Compose and capture
-  const captures = await composeAndCapture(sceneConfig, options);
-
   // Create a job record for tracking
   const job = createJob({
     prompt: request.prompt ?? `${objectPrompt} on ${backgroundPrompt}`,
@@ -232,8 +200,8 @@ export async function generateAsset(
 
   return {
     jobId: job.id,
-    captures,
     meshUrl,
+    backgroundUrl,
     sceneConfig,
   };
 }
@@ -274,6 +242,18 @@ export async function startGenerationJob(
 
 /**
  * Process a generation job (internal)
+ *
+ * Server-side processing:
+ * 1. Parse/decompose prompts
+ * 2. Generate mesh (Meshy) and background (DALL-E) in parallel
+ * 3. Persist assets to storage
+ * 4. Mark job as ready for client-side capture
+ *
+ * Client then:
+ * 1. Loads meshUrl + backgroundUrl into Three.js
+ * 2. Applies preset configuration
+ * 3. Captures scene
+ * 4. POSTs captures to /api/captures
  */
 async function processJob(
   jobId: string,
@@ -303,35 +283,13 @@ async function processJob(
       persistMesh(tempMeshUrl, jobId, 'glb'),
     ]);
     console.log('[PIPELINE] Stage complete: assets persisted');
+    console.log(`[PIPELINE] Mesh URL: ${persistentMeshUrl}`);
+    console.log(`[PIPELINE] Background URL: ${persistentBackgroundUrl}`);
 
-    // Build scene config with persistent URLs
-    console.log('[PIPELINE] Building scene configuration');
-    const sceneConfig = buildSceneConfig(
-      request.preset,
-      persistentBackgroundUrl,
-      persistentMeshUrl,
-      request.overrides
-    );
-
-    // Compose and capture
-    const captures = await composeAndCapture(sceneConfig, options);
-
-    // Upload captures to persistent storage
-    console.log('[PIPELINE] Stage start: uploading captures');
-    const captureUrls = await uploadCaptures(captures, jobId);
-    console.log('[PIPELINE] Stage complete: captures uploaded');
-
-    // Complete job with persistent URLs
-    completeJob(
-      jobId,
-      {
-        full: captureUrls.full,
-        web: captureUrls.web,
-        thumb: captureUrls.thumb,
-      },
-      persistentMeshUrl
-    );
-    console.log(`[PIPELINE] Job ${jobId} completed successfully`);
+    // Mark server-side complete - client will load assets and capture
+    // Job stays in 'processing' status until client POSTs captures
+    completeServerSideJob(jobId, persistentMeshUrl, persistentBackgroundUrl);
+    console.log(`[PIPELINE] Job ${jobId} server-side complete, awaiting client capture`);
   } catch (error) {
     console.log(`[PIPELINE] Job ${jobId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
