@@ -296,4 +296,27 @@ Visual tool for designing staging presets. Required because positioning 3D objec
 
 ---
 
-*Last updated: 2026-01-23*
+## Architecture Gotchas
+
+- **Three.js is client-only** - Never import `@/lib/scene/*` in API routes or server code. Causes "document is not defined" error.
+- **DALL-E URLs expire** - Background URLs from OpenAI expire after ~1 hour. Always persist via `persistBackground()` before returning to client.
+- **Meshy CDN URLs** - Similarly, persist meshes via `persistMesh()` for long-term storage.
+
+---
+
+## Session Continuity
+
+- **NSL Pattern** - End sessions with `NEXT_SESSION_LOG_YYYY-MM-DD_HHMM_DESCRIPTION.md` documenting decisions, gotchas, and next priorities.
+- **Get current date** - Run `date "+%Y-%m-%d_%H%M"` before creating NSL to ensure accurate timestamps.
+
+---
+
+## Testing Notes
+
+- **agent-browser** - Installed globally for browser automation. Use `agent-browser snapshot -i` for element refs.
+- **React input issue** - `agent-browser fill/type` may not trigger React state updates. Manual testing works as workaround.
+- **Browser tests** - Run with `pnpm test:browser`. Tests in `src/test/browser/`.
+
+---
+
+*Last updated: 2026-01-25*
