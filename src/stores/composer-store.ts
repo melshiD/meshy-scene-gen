@@ -40,6 +40,29 @@ export interface PromptState {
   background: string;
 }
 
+/** Generation stage for progress display */
+export type GenerationStage =
+  | 'idle'
+  | 'starting'
+  | 'decomposing'
+  | 'generating-mesh'
+  | 'generating-background'
+  | 'composing'
+  | 'completed'
+  | 'failed';
+
+/** Generation progress state */
+export interface GenerationProgress {
+  stage: GenerationStage;
+  jobId: string | null;
+  jobType: 'single' | 'multi' | null;
+  progress: number; // 0-100
+  error: string | null;
+  /** Decomposed prompts (populated after decomposition in single mode) */
+  decomposedObjectPrompt: string | null;
+  decomposedBackgroundPrompt: string | null;
+}
+
 export interface ComposerState {
   // Prompt inputs
   prompt: PromptState;
@@ -61,6 +84,9 @@ export interface ComposerState {
   isGenerating: boolean;
   meshUrl: string | null;
   backgroundUrl: string | null;
+
+  // Generation progress
+  generation: GenerationProgress;
 }
 
 export interface ComposerActions {
@@ -103,6 +129,11 @@ export interface ComposerActions {
   setBackgroundUrl: (url: string | null) => void;
   setIsGenerating: (isGenerating: boolean) => void;
 
+  // Generation progress actions
+  setGenerationStage: (stage: GenerationStage) => void;
+  setGenerationProgress: (progress: Partial<GenerationProgress>) => void;
+  resetGeneration: () => void;
+
   // Reset
   reset: () => void;
 }
@@ -130,6 +161,16 @@ function createDefaultObject(name: string = 'Object 1'): SceneObject {
 }
 
 const defaultObject = createDefaultObject();
+
+const initialGenerationProgress: GenerationProgress = {
+  stage: 'idle',
+  jobId: null,
+  jobType: null,
+  progress: 0,
+  error: null,
+  decomposedObjectPrompt: null,
+  decomposedBackgroundPrompt: null,
+};
 
 const initialState: ComposerState = {
   prompt: {
@@ -162,6 +203,7 @@ const initialState: ComposerState = {
   isGenerating: false,
   meshUrl: null,
   backgroundUrl: null,
+  generation: { ...initialGenerationProgress },
 };
 
 // ============================================================================
@@ -430,6 +472,23 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
     setBackgroundUrl: (backgroundUrl) => set({ backgroundUrl }),
     setIsGenerating: (isGenerating) => set({ isGenerating }),
 
+    // Generation progress actions
+    setGenerationStage: (stage) =>
+      set((state) => ({
+        generation: { ...state.generation, stage },
+      })),
+
+    setGenerationProgress: (progress) =>
+      set((state) => ({
+        generation: { ...state.generation, ...progress },
+      })),
+
+    resetGeneration: () =>
+      set({
+        generation: { ...initialGenerationProgress },
+        isGenerating: false,
+      }),
+
     // Reset
     reset: () => {
       const newDefaultObject = createDefaultObject();
@@ -471,3 +530,14 @@ export const selectCanAddObject = (state: ComposerState) =>
   state.objects.length < MAX_OBJECTS;
 export const selectCanRemoveObject = (state: ComposerState) =>
   state.objects.length > 1;
+
+// Generation progress selectors
+export const selectGeneration = (state: ComposerState) => state.generation;
+export const selectGenerationStage = (state: ComposerState) =>
+  state.generation.stage;
+export const selectGenerationError = (state: ComposerState) =>
+  state.generation.error;
+export const selectDecomposedPrompts = (state: ComposerState) => ({
+  objectPrompt: state.generation.decomposedObjectPrompt,
+  backgroundPrompt: state.generation.decomposedBackgroundPrompt,
+});

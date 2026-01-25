@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   ScenePreview,
   PromptInput,
@@ -10,6 +10,14 @@ import {
   PresetSelector,
 } from '@/components/composer';
 import { useComposerStore } from '@/stores/composer-store';
+import type { GenerationStage } from '@/stores/composer-store';
+import {
+  startGeneration,
+  pollJobUntilComplete,
+  getStageFromJobStatus,
+  type JobStatusResponse,
+  type SingleJobStatusResponse,
+} from '@/lib/api/generate';
 
 // ============================================================================
 // Control Panel Section
@@ -53,77 +61,306 @@ function Section({ title, children, defaultOpen = true }: SectionProps) {
 }
 
 // ============================================================================
+// Stage Labels
+// ============================================================================
+
+const STAGE_LABELS: Record<GenerationStage, string> = {
+  idle: 'Generate Scene',
+  starting: 'Starting...',
+  decomposing: 'Decomposing prompt...',
+  'generating-mesh': 'Generating 3D mesh...',
+  'generating-background': 'Generating background...',
+  composing: 'Composing scene...',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
+// ============================================================================
 // Generate Button
 // ============================================================================
 
 function GenerateButton() {
   const prompt = useComposerStore((state) => state.prompt);
+  const currentPresetId = useComposerStore((state) => state.currentPresetId);
   const isGenerating = useComposerStore((state) => state.isGenerating);
+  const generation = useComposerStore((state) => state.generation);
   const setIsGenerating = useComposerStore((state) => state.setIsGenerating);
   const setMeshUrl = useComposerStore((state) => state.setMeshUrl);
   const setBackgroundUrl = useComposerStore((state) => state.setBackgroundUrl);
+  const setGenerationProgress = useComposerStore(
+    (state) => state.setGenerationProgress
+  );
+  const resetGeneration = useComposerStore((state) => state.resetGeneration);
 
   const hasPrompt =
     prompt.mode === 'single'
       ? prompt.single.trim().length > 0
       : prompt.object.trim().length > 0 || prompt.background.trim().length > 0;
 
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
     if (!hasPrompt || isGenerating) return;
 
     setIsGenerating(true);
+    setGenerationProgress({
+      stage: 'starting',
+      jobId: null,
+      jobType: null,
+      progress: 0,
+      error: null,
+      decomposedObjectPrompt: null,
+      decomposedBackgroundPrompt: null,
+    });
 
-    // Placeholder: In production, this would call the /api/generate endpoint
-    // For now, simulate a delay and load a sample mesh
     try {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Build request based on prompt mode
+      const request =
+        prompt.mode === 'single'
+          ? {
+              prompt: prompt.single,
+              preset: currentPresetId ?? undefined,
+            }
+          : {
+              objectPrompt: prompt.object,
+              backgroundPrompt: prompt.background,
+              preset: currentPresetId ?? undefined,
+            };
 
-      // Sample public GLB URL for testing
-      // Using a simple cube from the Three.js examples
-      setMeshUrl(
-        'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Box/glTF-Binary/Box.glb'
-      );
+      // Start generation job
+      const startResponse = await startGeneration(request);
 
-      // Sample background (gradient image placeholder)
-      setBackgroundUrl(null);
+      setGenerationProgress({
+        jobId: startResponse.id,
+        jobType: startResponse.type,
+        stage: 'decomposing',
+      });
+
+      // Poll for completion
+      const finalStatus = await pollJobUntilComplete(startResponse.id, {
+        intervalMs: 2000,
+        onProgress: (status: JobStatusResponse) => {
+          const stage = getStageFromJobStatus(status);
+
+          // Calculate progress percentage
+          let progress = 0;
+          if (status.type === 'multi') {
+            progress = status.progress;
+          } else {
+            // Estimate progress for single-object jobs based on stage
+            switch (stage) {
+              case 'decomposing':
+                progress = 10;
+                break;
+              case 'generating-mesh':
+                progress = 30;
+                break;
+              case 'generating-background':
+                progress = 60;
+                break;
+              case 'composing':
+                progress = 90;
+                break;
+              case 'completed':
+                progress = 100;
+                break;
+              default:
+                progress = 0;
+            }
+          }
+
+          // Extract decomposed prompts if available
+          const singleStatus = status as SingleJobStatusResponse;
+          setGenerationProgress({
+            stage,
+            progress,
+            decomposedObjectPrompt: singleStatus.objectPrompt ?? null,
+            decomposedBackgroundPrompt: singleStatus.backgroundPrompt ?? null,
+          });
+        },
+      });
+
+      // Handle completion
+      if (finalStatus.status === 'completed') {
+        if (finalStatus.type === 'single') {
+          setMeshUrl(finalStatus.meshUrl ?? null);
+          // Background URL would be in assets if available
+        } else {
+          // For multi-object, get the first object's mesh
+          const firstObject = finalStatus.objects[0];
+          if (firstObject?.meshUrl) {
+            setMeshUrl(firstObject.meshUrl);
+          }
+          if (finalStatus.background.url) {
+            setBackgroundUrl(finalStatus.background.url);
+          }
+        }
+        setGenerationProgress({ stage: 'completed', progress: 100 });
+      } else if (finalStatus.status === 'failed') {
+        const errorMsg =
+          finalStatus.type === 'single'
+            ? finalStatus.error
+            : finalStatus.objects.find((o) => o.error)?.error ||
+              finalStatus.background.error ||
+              'Generation failed';
+        setGenerationProgress({
+          stage: 'failed',
+          error: errorMsg ?? 'Unknown error',
+        });
+      }
+    } catch (error) {
+      console.error('Generation error:', error);
+      setGenerationProgress({
+        stage: 'failed',
+        error: error instanceof Error ? error.message : 'Generation failed',
+      });
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [
+    hasPrompt,
+    isGenerating,
+    prompt,
+    currentPresetId,
+    setIsGenerating,
+    setGenerationProgress,
+    setMeshUrl,
+    setBackgroundUrl,
+  ]);
+
+  const buttonLabel = isGenerating
+    ? STAGE_LABELS[generation.stage]
+    : 'Generate Scene';
 
   return (
-    <button
-      onClick={handleGenerate}
-      disabled={!hasPrompt || isGenerating}
-      className="w-full py-3 px-4 text-sm font-semibold bg-indigo-600 rounded-lg text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors"
-    >
-      {isGenerating ? (
-        <span className="flex items-center justify-center gap-2">
+    <div className="space-y-2">
+      <button
+        onClick={handleGenerate}
+        disabled={!hasPrompt || isGenerating}
+        className="w-full py-3 px-4 text-sm font-semibold bg-indigo-600 rounded-lg text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-colors"
+      >
+        {isGenerating ? (
+          <span className="flex items-center justify-center gap-2">
+            <svg
+              className="animate-spin h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            {buttonLabel}
+          </span>
+        ) : (
+          'Generate Scene'
+        )}
+      </button>
+
+      {/* Progress bar */}
+      {isGenerating && generation.progress > 0 && (
+        <div className="w-full bg-neutral-800 rounded-full h-1.5">
+          <div
+            className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300"
+            style={{ width: `${generation.progress}%` }}
+          />
+        </div>
+      )}
+
+      {/* Error message */}
+      {generation.stage === 'failed' && generation.error && (
+        <div className="flex items-start gap-2 p-2 bg-red-900/30 border border-red-800 rounded-lg">
           <svg
-            className="animate-spin h-4 w-4"
-            viewBox="0 0 24 24"
+            className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5"
             fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
           >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
             <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          Generating...
-        </span>
-      ) : (
-        'Generate Scene'
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-red-300 break-words">
+              {generation.error}
+            </p>
+            <button
+              onClick={resetGeneration}
+              className="text-xs text-red-400 hover:text-red-300 underline mt-1"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
       )}
-    </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// Decomposed Prompts Display
+// ============================================================================
+
+function DecomposedPromptsDisplay() {
+  const prompt = useComposerStore((state) => state.prompt);
+  const generation = useComposerStore((state) => state.generation);
+
+  // Only show in single mode when we have decomposed prompts
+  if (prompt.mode !== 'single') return null;
+  if (
+    !generation.decomposedObjectPrompt &&
+    !generation.decomposedBackgroundPrompt
+  )
+    return null;
+
+  return (
+    <div className="p-3 bg-neutral-800/50 border border-neutral-700 rounded-lg space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-neutral-300">
+        <svg
+          className="w-3.5 h-3.5 text-indigo-400"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M13 10V3L4 14h7v7l9-11h-7z"
+          />
+        </svg>
+        AI Decomposition Result
+      </div>
+
+      {generation.decomposedObjectPrompt && (
+        <div className="space-y-1">
+          <div className="text-xs text-neutral-500">Object:</div>
+          <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">
+            {generation.decomposedObjectPrompt}
+          </div>
+        </div>
+      )}
+
+      {generation.decomposedBackgroundPrompt && (
+        <div className="space-y-1">
+          <div className="text-xs text-neutral-500">Background:</div>
+          <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">
+            {generation.decomposedBackgroundPrompt}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -205,8 +442,9 @@ export default function ComposerPage() {
           <div className="divide-y divide-neutral-800">
             <Section title="Prompt">
               <PromptInput />
-              <div className="mt-4 space-y-2">
+              <div className="mt-4 space-y-3">
                 <GenerateButton />
+                <DecomposedPromptsDisplay />
                 <LoadSampleButton />
               </div>
             </Section>
