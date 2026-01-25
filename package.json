@@ -10,7 +10,15 @@
     "lint:fix": "next lint --fix",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "test:browser": "npx tsx src/test/browser/runner.ts",
+    "test:browser:controls": "npx tsx src/test/browser/runner.ts --category controls",
+    "test:browser:orbit": "npx tsx src/test/browser/runner.ts --category orbit",
+    "test:browser:ui-state": "npx tsx src/test/browser/runner.ts --category ui-state",
+    "test:browser:visual": "npx tsx src/test/browser/runner.ts --category visual",
+    "test:browser:api": "npx tsx src/test/browser/runner.ts --category api --include-todo",
+    "test:browser:logging": "npx tsx src/test/browser/runner.ts --category logging --include-todo",
+    "test:browser:verbose": "npx tsx src/test/browser/runner.ts --verbose"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.0",
@@ -44,6 +52,7 @@
     "happy-dom": "^20.3.7",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
   }
