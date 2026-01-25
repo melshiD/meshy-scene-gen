@@ -43,3 +43,7 @@ Thumbs.db
 # Generated assets (local dev)
 /public/generated/*
 !/public/generated/README.md
+
+# Browser test screenshots
+/public/test-screenshots/*
+!/public/test-screenshots/README.md
