@@ -179,6 +179,11 @@ export interface CreateMeshTaskOptions {
   mode?: 'preview' | 'refine';
 }
 
+/** Response from Meshy task creation */
+interface MeshyCreateResponse {
+  result: string;  // Task ID
+}
+
 /**
  * Create a new text-to-3D mesh generation task
  */
@@ -194,12 +199,16 @@ export async function createMeshTask(
     ...(negativePrompt && { negative_prompt: negativePrompt }),
   };
 
-  return withRetry(() =>
-    meshyFetch<MeshyTask>('/text-to-3d', {
+  // Create task returns { result: taskId }
+  const response = await withRetry(() =>
+    meshyFetch<MeshyCreateResponse>('/text-to-3d', {
       method: 'POST',
       body: JSON.stringify(requestBody),
     })
   );
+
+  // Fetch the actual task status
+  return getMeshTaskStatus(response.result);
 }
 
 /**
