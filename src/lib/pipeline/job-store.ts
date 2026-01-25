@@ -55,6 +55,25 @@ export function updateJobStatus(id: string, status: JobStatus): void {
 }
 
 /**
+ * Update job with decomposed prompts after AI parsing
+ */
+export function updateJobDecomposedPrompts(
+  id: string,
+  objectPrompt: string,
+  backgroundPrompt: string,
+  mood?: string
+): void {
+  const job = jobs.get(id);
+  if (job) {
+    job.objectPrompt = objectPrompt;
+    job.backgroundPrompt = backgroundPrompt;
+    if (mood) {
+      job.mood = mood;
+    }
+  }
+}
+
+/**
  * Update job with completion data (full completion with captures)
  */
 export function completeJob(

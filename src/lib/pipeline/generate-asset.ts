@@ -17,6 +17,7 @@ import { persistBackground, persistMesh } from '@/lib/storage';
 import {
   createJob,
   updateJobStatus,
+  updateJobDecomposedPrompts,
   completeJob,
   completeServerSideJob,
   failJob,
@@ -266,6 +267,9 @@ async function processJob(
   try {
     // Parse prompts
     const { objectPrompt, backgroundPrompt, mood } = await parsePrompts(request);
+
+    // Store decomposed prompts in job for UI display
+    updateJobDecomposedPrompts(jobId, objectPrompt, backgroundPrompt, mood);
 
     // Generate assets (mesh and background in parallel)
     const { meshUrl: tempMeshUrl, backgroundUrl: tempBackgroundUrl } = await generateAssets(

@@ -248,6 +248,7 @@ export interface GeneratedAsset {
   prompt: string;
   objectPrompt?: string;
   backgroundPrompt?: string;
+  mood?: string;
   presetId?: string;
   assets?: {
     full: string;   // 2048x2048 PNG
