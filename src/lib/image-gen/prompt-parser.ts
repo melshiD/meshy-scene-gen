@@ -114,8 +114,11 @@ export async function decomposePrompt(
   prompt: string,
   config: PromptParserConfig = {}
 ): Promise<ParseResponse> {
+  console.log(`[DECOMPOSE] Input: "${prompt}"`);
+
   // Validate input
   if (!prompt || typeof prompt !== 'string') {
+    console.log('[DECOMPOSE] Error: Prompt must be a non-empty string');
     return {
       success: false,
       error: 'Prompt must be a non-empty string',
@@ -124,6 +127,7 @@ export async function decomposePrompt(
 
   const trimmedPrompt = prompt.trim();
   if (trimmedPrompt.length === 0) {
+    console.log('[DECOMPOSE] Error: Prompt cannot be empty');
     return {
       success: false,
       error: 'Prompt cannot be empty',
@@ -131,6 +135,7 @@ export async function decomposePrompt(
   }
 
   if (trimmedPrompt.length > 2000) {
+    console.log('[DECOMPOSE] Error: Prompt exceeds maximum length of 2000 characters');
     return {
       success: false,
       error: 'Prompt exceeds maximum length of 2000 characters',
@@ -141,6 +146,7 @@ export async function decomposePrompt(
     const client = getClient(config.apiKey);
     const model = config.model ?? 'gpt-4o-mini';
 
+    console.log(`[DECOMPOSE] Calling OpenAI (model: ${model})`);
     const completion = await client.chat.completions.create({
       model,
       messages: [
@@ -154,6 +160,7 @@ export async function decomposePrompt(
 
     const content = completion.choices[0]?.message?.content;
     if (!content) {
+      console.log('[DECOMPOSE] Error: No response from OpenAI');
       return {
         success: false,
         error: 'No response from OpenAI',
@@ -171,6 +178,8 @@ export async function decomposePrompt(
       camera: typeof parsed.camera === 'string' ? parsed.camera : DEFAULT_DECOMPOSED.camera,
     };
 
+    console.log(`[DECOMPOSE] Result: ${JSON.stringify(decomposed)}`);
+
     return {
       success: true,
       data: decomposed,
@@ -178,6 +187,7 @@ export async function decomposePrompt(
   } catch (error) {
     // Handle specific error types
     if (error instanceof SyntaxError) {
+      console.log('[DECOMPOSE] Error: Failed to parse AI response as JSON');
       return {
         success: false,
         error: 'Failed to parse AI response as JSON',
@@ -185,15 +195,18 @@ export async function decomposePrompt(
     }
 
     if (error instanceof OpenAI.APIError) {
+      console.log(`[DECOMPOSE] Error: OpenAI API error: ${error.message}`);
       return {
         success: false,
         error: `OpenAI API error: ${error.message}`,
       };
     }
 
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    console.log(`[DECOMPOSE] Error: ${errorMessage}`);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      error: errorMessage,
     };
   }
 }

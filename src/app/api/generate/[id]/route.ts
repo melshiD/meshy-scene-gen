@@ -31,9 +31,12 @@ export async function GET(request: Request, { params }: RouteParams) {
   try {
     const { id } = await params;
 
+    console.log(`[API] GET /api/generate/${id} - Status check`);
+
     // Try multi-object job first
     const multiJob = getMultiObjectJobStatus(id);
     if (multiJob) {
+      console.log(`[API] Job ${id}: type=multi, status=${multiJob.status}, progress=${multiJob.progress}%`);
       return NextResponse.json({
         id: multiJob.id,
         type: 'multi',
@@ -49,18 +52,20 @@ export async function GET(request: Request, { params }: RouteParams) {
     // Try single-object job
     const singleJob = getJobStatus(id);
     if (singleJob) {
+      console.log(`[API] Job ${id}: type=single, status=${singleJob.status}`);
       return NextResponse.json({
         ...singleJob,
         type: 'single',
       });
     }
 
+    console.log(`[API] Job ${id}: not found`);
     return NextResponse.json(
       { error: 'Job not found' },
       { status: 404 }
     );
   } catch (error) {
-    console.error('Get job status error:', error);
+    console.error('[API] Get job status error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },
       { status: 500 }

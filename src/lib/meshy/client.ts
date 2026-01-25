@@ -192,6 +192,8 @@ export async function createMeshTask(
 ): Promise<MeshyTask> {
   const { prompt, artStyle = 'realistic', negativePrompt, mode = 'preview' } = options;
 
+  console.log(`[MESHY] Creating task: "${prompt}" (art_style: ${artStyle}, mode: ${mode})`);
+
   const requestBody: MeshyCreateTaskRequest = {
     mode,
     prompt,
@@ -206,6 +208,8 @@ export async function createMeshTask(
       body: JSON.stringify(requestBody),
     })
   );
+
+  console.log(`[MESHY] Task created: ${response.result}`);
 
   // Fetch the actual task status
   return getMeshTaskStatus(response.result);
@@ -237,6 +241,7 @@ export async function waitForMesh(
     onProgress,
   } = options;
 
+  console.log(`[MESHY] Waiting for task ${taskId} (poll interval: ${pollIntervalMs}ms, max wait: ${maxWaitTimeMs}ms)`);
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWaitTimeMs) {
@@ -248,9 +253,11 @@ export async function waitForMesh(
 
     switch (task.status) {
       case 'SUCCEEDED':
+        console.log(`[MESHY] Task ${taskId} complete: ${task.model_urls?.glb ?? 'no URL'}`);
         return task;
 
       case 'FAILED':
+        console.log(`[MESHY] Task ${taskId} failed: ${task.task_error?.message ?? 'Unknown error'}`);
         throw new MeshyError(
           task.task_error?.message ?? 'Mesh generation failed',
           'TASK_FAILED',
@@ -259,6 +266,7 @@ export async function waitForMesh(
         );
 
       case 'EXPIRED':
+        console.log(`[MESHY] Task ${taskId} expired`);
         throw new MeshyError(
           'Mesh task expired before completion',
           'TASK_EXPIRED',
@@ -269,10 +277,12 @@ export async function waitForMesh(
       case 'PENDING':
       case 'IN_PROGRESS':
         // Continue polling
+        console.log(`[MESHY] Task ${taskId} progress: ${task.progress ?? 0}%`);
         await sleep(pollIntervalMs);
         break;
 
       default:
+        console.log(`[MESHY] Task ${taskId} unknown status: ${task.status}`);
         throw new MeshyError(
           `Unknown task status: ${task.status}`,
           'INVALID_RESPONSE',
@@ -282,6 +292,7 @@ export async function waitForMesh(
     }
   }
 
+  console.log(`[MESHY] Task ${taskId} timed out after ${maxWaitTimeMs}ms`);
   throw new MeshyError(
     `Mesh generation timed out after ${maxWaitTimeMs}ms`,
     'TIMEOUT',

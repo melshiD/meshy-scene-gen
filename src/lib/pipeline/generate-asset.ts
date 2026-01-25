@@ -62,6 +62,9 @@ export async function parsePrompts(
 ): Promise<{ objectPrompt: string; backgroundPrompt: string; mood: string }> {
   // If split prompts provided, use them directly
   if (request.objectPrompt && request.backgroundPrompt) {
+    console.log('[PIPELINE] Using split prompts (skipping decomposition)');
+    console.log(`[PIPELINE] Object prompt: "${request.objectPrompt}"`);
+    console.log(`[PIPELINE] Background prompt: "${request.backgroundPrompt}"`);
     return {
       objectPrompt: request.objectPrompt,
       backgroundPrompt: request.backgroundPrompt,
@@ -71,10 +74,16 @@ export async function parsePrompts(
 
   // If single prompt, decompose with AI
   if (request.prompt) {
+    console.log('[PIPELINE] Stage start: prompt decomposition');
     const result = await decomposePrompt(request.prompt);
     if (!result.success) {
+      console.log(`[PIPELINE] Stage failed: prompt decomposition - ${result.error}`);
       throw new Error(`Failed to decompose prompt: ${result.error}`);
     }
+    console.log('[PIPELINE] Stage complete: prompt decomposition');
+    console.log(`[PIPELINE] Object prompt: "${result.data.object}"`);
+    console.log(`[PIPELINE] Background prompt: "${result.data.background}"`);
+    console.log(`[PIPELINE] Mood: "${result.data.mood}"`);
     return {
       objectPrompt: result.data.object,
       backgroundPrompt: result.data.background,
@@ -96,6 +105,8 @@ export async function generateAssets(
 ): Promise<{ meshUrl: string; backgroundUrl: string }> {
   const { onProgress, meshArtStyle = 'realistic' } = options ?? {};
 
+  console.log('[PIPELINE] Stage start: parallel asset generation (mesh + background)');
+
   // Run Meshy and DALL-E in parallel
   const [meshTask, bgResult] = await Promise.all([
     generateMesh({
@@ -113,10 +124,16 @@ export async function generateAssets(
   ]);
 
   if (!bgResult.success) {
+    console.log(`[PIPELINE] Stage failed: background generation - ${bgResult.error}`);
     throw new Error(`Background generation failed: ${bgResult.error}`);
   }
 
   const meshUrl = getMeshUrl(meshTask, 'glb');
+
+  console.log('[PIPELINE] Stage complete: mesh generation');
+  console.log('[PIPELINE] Stage complete: background generation');
+  console.log(`[PIPELINE] Mesh URL: ${meshUrl.substring(0, 60)}...`);
+  console.log(`[PIPELINE] Background URL: ${bgResult.url.substring(0, 60)}...`);
 
   return { meshUrl, backgroundUrl: bgResult.url };
 }
@@ -130,6 +147,7 @@ export async function composeAndCapture(
 ): Promise<MultiCaptureResult> {
   const { onProgress, width = 2048, height = 2048 } = options ?? {};
 
+  console.log(`[PIPELINE] Stage start: scene composition (${width}x${height})`);
   onProgress?.('scene', 0);
 
   // Create the Three.js scene
@@ -140,21 +158,25 @@ export async function composeAndCapture(
     shadows: true,
   });
 
+  console.log('[PIPELINE] Three.js scene created');
   onProgress?.('scene', 50);
 
   try {
     // Capture at multiple resolutions
+    console.log('[PIPELINE] Stage start: multi-resolution capture');
     const captures = await captureMultiResolution(
       sceneResult.renderer,
       sceneResult.scene,
       sceneResult.camera
     );
 
+    console.log('[PIPELINE] Stage complete: scene capture');
     onProgress?.('scene', 100);
 
     return captures;
   } finally {
     // Clean up scene resources
+    console.log('[PIPELINE] Scene resources disposed');
     sceneResult.dispose();
   }
 }
@@ -235,9 +257,15 @@ export async function startGenerationJob(
     presetId: request.preset,
   });
 
+  console.log(`[PIPELINE] Job created: ${job.id}`);
+  console.log(`[PIPELINE] Job prompt: "${prompt}"`);
+  if (request.preset) {
+    console.log(`[PIPELINE] Using preset: ${request.preset}`);
+  }
+
   // Start async generation (don't await)
   processJob(job.id, request, options).catch((error) => {
-    console.error(`Job ${job.id} failed:`, error);
+    console.error(`[PIPELINE] Job ${job.id} failed:`, error);
     failJob(job.id, error instanceof Error ? error.message : 'Unknown error');
   });
 
@@ -252,6 +280,7 @@ async function processJob(
   request: GenerateRequest,
   options?: GenerateAssetOptions
 ): Promise<void> {
+  console.log(`[PIPELINE] Job ${jobId} processing started`);
   updateJobStatus(jobId, 'processing');
 
   try {
@@ -268,12 +297,15 @@ async function processJob(
 
     // Persist background and mesh to storage in parallel
     // This ensures URLs remain valid after DALL-E/Meshy CDN expiry
+    console.log('[PIPELINE] Stage start: persisting assets to storage');
     const [persistentBackgroundUrl, persistentMeshUrl] = await Promise.all([
       persistBackground(tempBackgroundUrl, jobId),
       persistMesh(tempMeshUrl, jobId, 'glb'),
     ]);
+    console.log('[PIPELINE] Stage complete: assets persisted');
 
     // Build scene config with persistent URLs
+    console.log('[PIPELINE] Building scene configuration');
     const sceneConfig = buildSceneConfig(
       request.preset,
       persistentBackgroundUrl,
@@ -285,7 +317,9 @@ async function processJob(
     const captures = await composeAndCapture(sceneConfig, options);
 
     // Upload captures to persistent storage
+    console.log('[PIPELINE] Stage start: uploading captures');
     const captureUrls = await uploadCaptures(captures, jobId);
+    console.log('[PIPELINE] Stage complete: captures uploaded');
 
     // Complete job with persistent URLs
     completeJob(
@@ -297,7 +331,9 @@ async function processJob(
       },
       persistentMeshUrl
     );
+    console.log(`[PIPELINE] Job ${jobId} completed successfully`);
   } catch (error) {
+    console.log(`[PIPELINE] Job ${jobId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
     throw error;
   }
@@ -412,9 +448,16 @@ export async function startMultiObjectGenerationJob(
     scenePreset: request.scenePreset,
   });
 
+  console.log(`[PIPELINE] Multi-object job created: ${job.id}`);
+  console.log(`[PIPELINE] Background prompt: "${request.backgroundPrompt}"`);
+  console.log(`[PIPELINE] Object count: ${request.objects.length}`);
+  request.objects.forEach((obj, i) => {
+    console.log(`[PIPELINE]   Object ${i}: "${obj.prompt}" (style: ${obj.artStyle ?? 'realistic'})`);
+  });
+
   // Start async generation (don't await)
   processMultiObjectJob(job.id, request, options).catch((error) => {
-    console.error(`Multi-object job ${job.id} failed:`, error);
+    console.error(`[PIPELINE] Multi-object job ${job.id} failed:`, error);
     failMultiObjectJob(job.id, error instanceof Error ? error.message : 'Unknown error');
   });
 
@@ -429,6 +472,7 @@ async function processMultiObjectJob(
   request: MultiObjectGenerateRequest,
   options?: MultiObjectGenerateOptions
 ): Promise<void> {
+  console.log(`[PIPELINE] Multi-object job ${jobId} processing started`);
   updateMultiObjectJobStatus(jobId, 'processing');
 
   const job = getMultiObjectJob(jobId);
@@ -438,6 +482,7 @@ async function processMultiObjectJob(
 
   try {
     // Generate background and all objects in parallel
+    console.log('[PIPELINE] Stage start: parallel generation (1 background + ' + request.objects.length + ' objects)');
     const backgroundPromise = generateBackgroundAsync(jobId, request.backgroundPrompt);
     const objectPromises = request.objects.map((obj, index) =>
       generateObjectAsync(jobId, `obj-${index}`, obj.prompt, obj.artStyle ?? 'realistic')
@@ -445,14 +490,17 @@ async function processMultiObjectJob(
 
     // Wait for all generations to complete
     await Promise.all([backgroundPromise, ...objectPromises]);
+    console.log('[PIPELINE] Stage complete: all parallel generations finished');
 
     // Check completion and update job status
     if (isMultiObjectJobComplete(jobId)) {
       completeMultiObjectJob(jobId);
+      console.log(`[PIPELINE] Multi-object job ${jobId} completed successfully`);
     }
 
     options?.onProgress?.(jobId, getMultiObjectJobProgress(jobId));
   } catch (error) {
+    console.log(`[PIPELINE] Multi-object job ${jobId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     failMultiObjectJob(jobId, error instanceof Error ? error.message : 'Unknown error');
     throw error;
   }
@@ -462,21 +510,26 @@ async function processMultiObjectJob(
  * Generate background async with status tracking
  */
 async function generateBackgroundAsync(jobId: string, prompt: string): Promise<string | null> {
+  console.log(`[PIPELINE] Background generation started for job ${jobId}`);
   updateBackgroundStatus(jobId, 'processing');
 
   try {
     const result = await generateBackground(prompt);
     if (!result.success) {
+      console.log(`[PIPELINE] Background generation failed for job ${jobId}: ${result.error}`);
       updateBackgroundStatus(jobId, 'failed', undefined, result.error);
       return null;
     }
 
     // Persist background to storage before DALL-E URL expires
+    console.log(`[PIPELINE] Persisting background for job ${jobId}`);
     const persistentUrl = await persistBackground(result.url, jobId);
+    console.log(`[PIPELINE] Background complete for job ${jobId}`);
     updateBackgroundStatus(jobId, 'completed', persistentUrl);
     return persistentUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Background generation failed';
+    console.log(`[PIPELINE] Background generation error for job ${jobId}: ${message}`);
     updateBackgroundStatus(jobId, 'failed', undefined, message);
     return null;
   }
@@ -491,6 +544,7 @@ async function generateObjectAsync(
   prompt: string,
   artStyle: MeshyArtStyle
 ): Promise<string | null> {
+  console.log(`[PIPELINE] Object ${objectId} generation started: "${prompt}"`);
   updateObjectStatus(jobId, objectId, 'processing', 0);
 
   try {
@@ -506,11 +560,14 @@ async function generateObjectAsync(
     const tempMeshUrl = getMeshUrl(meshTask, 'glb');
 
     // Persist mesh to storage (use objectId in key for multi-object jobs)
+    console.log(`[PIPELINE] Persisting mesh for object ${objectId}`);
     const persistentMeshUrl = await persistMesh(tempMeshUrl, `${jobId}/${objectId}`, 'glb');
+    console.log(`[PIPELINE] Object ${objectId} complete`);
     updateObjectStatus(jobId, objectId, 'completed', 100, persistentMeshUrl);
     return persistentMeshUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Mesh generation failed';
+    console.log(`[PIPELINE] Object ${objectId} failed: ${message}`);
     updateObjectStatus(jobId, objectId, 'failed', undefined, undefined, message);
     return null;
   }

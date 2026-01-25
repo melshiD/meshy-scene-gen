@@ -123,8 +123,11 @@ export async function generateBackground(
   description: string,
   config: BackgroundConfig = {}
 ): Promise<GenerateBackgroundResult> {
+  console.log(`[DALLE] Generating background: "${description}"`);
+
   // Validate input
   if (!description || typeof description !== 'string') {
+    console.log('[DALLE] Error: Description must be a non-empty string');
     return {
       success: false,
       error: 'Description must be a non-empty string',
@@ -133,6 +136,7 @@ export async function generateBackground(
 
   const trimmedDescription = description.trim();
   if (trimmedDescription.length === 0) {
+    console.log('[DALLE] Error: Description cannot be empty');
     return {
       success: false,
       error: 'Description cannot be empty',
@@ -140,6 +144,7 @@ export async function generateBackground(
   }
 
   if (trimmedDescription.length > 4000) {
+    console.log('[DALLE] Error: Description exceeds maximum length');
     return {
       success: false,
       error: 'Description exceeds maximum length of 4000 characters',
@@ -154,6 +159,9 @@ export async function generateBackground(
     const allModifiers = [...BACKGROUND_MODIFIERS, ...userModifiers];
     const enhancedPrompt = buildBackgroundPrompt(trimmedDescription, allModifiers);
 
+    console.log(`[DALLE] Enhanced prompt: "${enhancedPrompt.substring(0, 100)}..."`);
+    console.log(`[DALLE] Config: size=${config.size ?? DEFAULT_CONFIG.size}, quality=${config.quality ?? DEFAULT_CONFIG.quality}, style=${config.style ?? DEFAULT_CONFIG.style}`);
+
     const response = await client.images.generate({
       model: 'dall-e-3',
       prompt: enhancedPrompt,
@@ -165,6 +173,7 @@ export async function generateBackground(
     });
 
     if (!response.data || response.data.length === 0) {
+      console.log('[DALLE] Error: No image data in DALL-E response');
       return {
         success: false,
         error: 'No image data in DALL-E response',
@@ -173,54 +182,66 @@ export async function generateBackground(
 
     const imageData = response.data[0];
     if (!imageData?.url) {
+      console.log('[DALLE] Error: No image URL in DALL-E response');
       return {
         success: false,
         error: 'No image URL in DALL-E response',
       };
     }
 
+    const revisedPrompt = imageData.revised_prompt ?? enhancedPrompt;
+    console.log(`[DALLE] Success! Revised prompt: "${revisedPrompt.substring(0, 100)}..."`);
+    console.log(`[DALLE] Image URL: ${imageData.url.substring(0, 60)}...`);
+
     return {
       success: true,
       url: imageData.url,
-      revisedPrompt: imageData.revised_prompt ?? enhancedPrompt,
+      revisedPrompt,
     };
   } catch (error) {
     if (error instanceof OpenAI.APIError) {
       // Handle specific API errors
       if (error.status === 400) {
+        console.log(`[DALLE] Error: Invalid request: ${error.message}`);
         return {
           success: false,
           error: `Invalid request: ${error.message}`,
         };
       }
       if (error.status === 401) {
+        console.log('[DALLE] Error: Invalid API key');
         return {
           success: false,
           error: 'Invalid API key',
         };
       }
       if (error.status === 429) {
+        console.log('[DALLE] Error: Rate limit exceeded');
         return {
           success: false,
           error: 'Rate limit exceeded. Please try again later.',
         };
       }
       if (error.status === 500) {
+        console.log('[DALLE] Error: OpenAI server error');
         return {
           success: false,
           error: 'OpenAI server error. Please try again.',
         };
       }
 
+      console.log(`[DALLE] Error: DALL-E API error: ${error.message}`);
       return {
         success: false,
         error: `DALL-E API error: ${error.message}`,
       };
     }
 
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    console.log(`[DALLE] Error: ${errorMessage}`);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      error: errorMessage,
     };
   }
 }

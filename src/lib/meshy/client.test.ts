@@ -35,6 +35,12 @@ describe('Meshy API Client', () => {
         created_at: Date.now(),
       };
 
+      // First call: POST to create task, returns { result: taskId }
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'task-123' }),
+      });
+      // Second call: GET task status
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(mockTask),
@@ -43,7 +49,7 @@ describe('Meshy API Client', () => {
       const result = await createMeshTask({ prompt: 'a red cube' });
 
       expect(result).toEqual(mockTask);
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
 
       const [url, options] = mockFetch.mock.calls[0];
       expect(url).toContain('/text-to-3d');
@@ -63,6 +69,12 @@ describe('Meshy API Client', () => {
         created_at: Date.now(),
       };
 
+      // First call: POST to create task
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'task-456' }),
+      });
+      // Second call: GET task status
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(mockTask),
@@ -281,20 +293,26 @@ describe('Meshy API Client', () => {
         finished_at: Date.now(),
       };
 
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve(pendingTask),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve(completedTask),
-        });
+      // Call 1: POST to create task
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ result: 'task-123' }),
+      });
+      // Call 2: GET task status (from createMeshTask)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(pendingTask),
+      });
+      // Call 3: GET task status (from waitForMesh) - returns completed
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(completedTask),
+      });
 
       const result = await generateMesh({ prompt: 'test object' });
 
       expect(result.status).toBe('SUCCEEDED');
-      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
 

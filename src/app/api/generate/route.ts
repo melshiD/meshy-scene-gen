@@ -38,8 +38,12 @@ export async function POST(request: Request) {
     // Detect multi-object vs single-object request
     if (isMultiObjectRequest(body)) {
       // Multi-object request
+      console.log(`[API] POST /api/generate - Multi-object request (${body.objects.length} objects)`);
+      console.log(`[API] Background: "${body.backgroundPrompt}"`);
+
       const validation = validateMultiObjectRequest(body);
       if (!validation.valid) {
+        console.log(`[API] Validation failed: ${validation.error}`);
         return NextResponse.json(
           { error: validation.error },
           { status: 400 }
@@ -48,14 +52,20 @@ export async function POST(request: Request) {
 
       const jobId = await startMultiObjectGenerationJob(body);
 
+      console.log(`[API] Multi-object job created: ${jobId}`);
       return NextResponse.json(
         { id: jobId, status: 'pending', type: 'multi', objectCount: body.objects.length },
         { status: 202 }
       );
     } else {
       // Legacy single-object request
+      const prompt = body.prompt ?? `${body.objectPrompt} + ${body.backgroundPrompt}`;
+      console.log(`[API] POST /api/generate - Single-object request`);
+      console.log(`[API] Prompt: "${prompt}"`);
+
       const validation = validateRequest(body);
       if (!validation.valid) {
+        console.log(`[API] Validation failed: ${validation.error}`);
         return NextResponse.json(
           { error: validation.error },
           { status: 400 }
@@ -64,13 +74,14 @@ export async function POST(request: Request) {
 
       const jobId = await startGenerationJob(body);
 
+      console.log(`[API] Single-object job created: ${jobId}`);
       return NextResponse.json(
         { id: jobId, status: 'pending', type: 'single' },
         { status: 202 }
       );
     }
   } catch (error) {
-    console.error('Generate API error:', error);
+    console.error('[API] Generate API error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Internal server error' },
       { status: 500 }
