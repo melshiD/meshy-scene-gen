@@ -257,9 +257,62 @@ export interface GeneratedAsset {
   };
   meshUrl?: string;
   backgroundUrl?: string;  // Persisted background image URL
+  /** URL to scene manifest (set when captures complete) */
+  manifestUrl?: string;
   error?: string;
   createdAt: Date;
   completedAt?: Date;
+}
+
+// ============================================================================
+// Captures Upload Types
+// ============================================================================
+
+/** Scene config sent by client at capture time */
+export interface CaptureSceneConfig {
+  camera: {
+    position: Vec3;
+    fov: number;
+    lookAt: Vec3;
+  };
+  lighting: {
+    preset: LightingPreset;
+    intensity?: number;
+    color?: string;
+  };
+  object?: {
+    position: Vec3;
+    scale: number;
+    rotation: Vec3;
+  };
+  objects?: Array<{
+    id: string;
+    name: string;
+    prompt: string;
+    artStyle?: MeshyArtStyle;
+    transform: {
+      position: Vec3;
+      scale: number;
+      rotation: Vec3;
+    };
+    visible: boolean;
+  }>;
+  layout?: LayoutConfig;
+}
+
+/** Request body for captures upload */
+export interface CapturesUploadRequest {
+  jobId: string;
+  captures: {
+    full: string;
+    web: string;
+    thumb: string;
+  };
+  sceneConfig?: CaptureSceneConfig;
+  metadata?: {
+    tags?: string[];
+    custom?: Record<string, unknown>;
+  };
 }
 
 // ============================================================================

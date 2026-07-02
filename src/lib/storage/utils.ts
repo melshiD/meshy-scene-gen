@@ -165,3 +165,13 @@ export function detectImageFormat(contentTypeOrUrl: string): ImageFormat {
   // Default to PNG
   return 'png';
 }
+
+/**
+ * Generate a storage key for manifest files
+ *
+ * @param jobId - The job identifier
+ * @returns Storage key like "manifest/abc123/manifest.json"
+ */
+export function generateManifestKey(jobId: string): string {
+  return `manifest/${jobId}/manifest.json`;
+}

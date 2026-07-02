@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   ScenePreview,
   PromptInput,
@@ -9,12 +9,15 @@ import {
   LightingControls,
   PresetSelector,
 } from '@/components/composer';
+import type { ScenePreviewHandle } from '@/components/composer/ScenePreview';
 import { useComposerStore } from '@/stores/composer-store';
 import type { GenerationStage } from '@/stores/composer-store';
 import {
   startGeneration,
   pollJobUntilComplete,
   getStageFromJobStatus,
+  uploadCaptures,
+  buildSceneConfigFromState,
   type JobStatusResponse,
   type SingleJobStatusResponse,
 } from '@/lib/api/generate';
@@ -79,7 +82,11 @@ const STAGE_LABELS: Record<GenerationStage, string> = {
 // Generate Button
 // ============================================================================
 
-function GenerateButton() {
+interface GenerateButtonProps {
+  scenePreviewRef: React.RefObject<ScenePreviewHandle>;
+}
+
+function GenerateButton({ scenePreviewRef }: GenerateButtonProps) {
   const prompt = useComposerStore((state) => state.prompt);
   const currentPresetId = useComposerStore((state) => state.currentPresetId);
   const isGenerating = useComposerStore((state) => state.isGenerating);
@@ -91,6 +98,12 @@ function GenerateButton() {
     (state) => state.setGenerationProgress
   );
   const resetGeneration = useComposerStore((state) => state.resetGeneration);
+
+  // Get scene state for building capture config
+  const cameraState = useComposerStore((state) => state.camera);
+  const lightingState = useComposerStore((state) => state.lighting);
+  const objectState = useComposerStore((state) => state.object);
+  const objectsState = useComposerStore((state) => state.objects);
 
   const hasPrompt =
     prompt.mode === 'single'
@@ -178,11 +191,22 @@ function GenerateButton() {
         },
       });
 
-      // Handle completion
-      if (finalStatus.status === 'completed') {
+      // Handle completion or server-side ready (assets available but waiting for capture)
+      const isComplete = finalStatus.status === 'completed';
+      const isServerSideReady = finalStatus.type === 'single' &&
+        (finalStatus as SingleJobStatusResponse).meshUrl &&
+        (finalStatus as SingleJobStatusResponse).backgroundUrl;
+
+      if (isComplete || isServerSideReady) {
+        // Get the job ID for capture upload
+        const jobId = finalStatus.id;
+
         if (finalStatus.type === 'single') {
-          setMeshUrl(finalStatus.meshUrl ?? null);
-          // Background URL would be in assets if available
+          const singleStatus = finalStatus as SingleJobStatusResponse;
+          setMeshUrl(singleStatus.meshUrl ?? null);
+          if (singleStatus.backgroundUrl) {
+            setBackgroundUrl(singleStatus.backgroundUrl);
+          }
         } else {
           // For multi-object, get the first object's mesh
           const firstObject = finalStatus.objects[0];
@@ -193,6 +217,47 @@ function GenerateButton() {
             setBackgroundUrl(finalStatus.background.url);
           }
         }
+
+        // Update stage to composing while we capture
+        setGenerationProgress({ stage: 'composing', progress: 90 });
+
+        // Wait for scene to render, then capture
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        try {
+          if (scenePreviewRef.current) {
+            console.log('[COMPOSER] Capturing scene...');
+            const captures = await scenePreviewRef.current.capture();
+
+            // Build scene config from current state
+            const sceneConfig = buildSceneConfigFromState({
+              camera: cameraState,
+              lighting: lightingState,
+              object: objectState,
+              objects: objectsState,
+            });
+
+            console.log('[COMPOSER] Uploading captures with manifest...');
+            const uploadResult = await uploadCaptures(
+              jobId,
+              {
+                full: captures.full.dataUrl,
+                web: captures.web.dataUrl,
+                thumb: captures.thumb.dataUrl,
+              },
+              sceneConfig
+            );
+
+            console.log('[COMPOSER] Upload complete:', uploadResult);
+            if (uploadResult.manifestUrl) {
+              console.log('[COMPOSER] Manifest URL:', uploadResult.manifestUrl);
+            }
+          }
+        } catch (captureError) {
+          console.error('[COMPOSER] Capture/upload failed:', captureError);
+          // Don't fail the whole generation, just log the error
+        }
+
         setGenerationProgress({ stage: 'completed', progress: 100 });
       } else if (finalStatus.status === 'failed') {
         const errorMsg =
@@ -224,6 +289,11 @@ function GenerateButton() {
     setGenerationProgress,
     setMeshUrl,
     setBackgroundUrl,
+    scenePreviewRef,
+    cameraState,
+    lightingState,
+    objectState,
+    objectsState,
   ]);
 
   const buttonLabel = isGenerating
@@ -370,6 +440,7 @@ function DecomposedPromptsDisplay() {
 
 function LoadSampleButton() {
   const setMeshUrl = useComposerStore((state) => state.setMeshUrl);
+  const setBackgroundUrl = useComposerStore((state) => state.setBackgroundUrl);
 
   const sampleModels = [
     {
@@ -386,6 +457,26 @@ function LoadSampleButton() {
     },
   ];
 
+  // Saved scenes from previous generations
+  const [savedScenes, setSavedScenes] = useState<Array<{
+    id: string;
+    name: string;
+    prompt?: string;
+    hasPrompt: boolean;
+    meshUrl: string;
+    backgroundUrl: string;
+    createdAt: string;
+  }>>([]);
+  const [showSaved, setShowSaved] = useState(false);
+
+  // Scan for saved scenes on mount
+  useState(() => {
+    fetch('/api/saved-scenes')
+      .then((res) => res.ok ? res.json() : { scenes: [] })
+      .then((data) => setSavedScenes(data.scenes || []))
+      .catch(() => {});
+  });
+
   const [currentIndex, setCurrentIndex] = useState(0);
 
   const loadSample = () => {
@@ -394,13 +485,52 @@ function LoadSampleButton() {
     setCurrentIndex((currentIndex + 1) % sampleModels.length);
   };
 
+  const loadSavedScene = (scene: { meshUrl: string; backgroundUrl: string }) => {
+    setMeshUrl(scene.meshUrl);
+    setBackgroundUrl(scene.backgroundUrl);
+    setShowSaved(false);
+  };
+
   return (
-    <button
-      onClick={loadSample}
-      className="w-full py-2 px-4 text-xs font-medium bg-neutral-800 border border-neutral-700 rounded-lg text-neutral-300 hover:bg-neutral-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-neutral-500"
-    >
-      Load Sample Model ({sampleModels[currentIndex].name})
-    </button>
+    <div className="space-y-2">
+      <button
+        onClick={loadSample}
+        className="w-full py-2 px-4 text-xs font-medium bg-neutral-800 border border-neutral-700 rounded-lg text-neutral-300 hover:bg-neutral-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-neutral-500"
+      >
+        Load Sample Model ({sampleModels[currentIndex].name})
+      </button>
+
+      {savedScenes.length > 0 && (
+        <div className="relative">
+          <button
+            onClick={() => setShowSaved(!showSaved)}
+            className="w-full py-2 px-4 text-xs font-medium bg-emerald-900/50 border border-emerald-700 rounded-lg text-emerald-300 hover:bg-emerald-800/50 hover:text-emerald-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            Load Saved Scene ({savedScenes.length} available)
+          </button>
+
+          {showSaved && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl z-10 max-h-64 overflow-y-auto">
+              {savedScenes.map((scene) => (
+                <button
+                  key={scene.id}
+                  onClick={() => loadSavedScene(scene)}
+                  className="w-full px-3 py-2 text-left hover:bg-neutral-800 border-b border-neutral-800 last:border-b-0"
+                >
+                  <div className={`text-sm truncate ${scene.hasPrompt ? 'text-neutral-200' : 'text-neutral-400 italic'}`}>
+                    {scene.hasPrompt ? scene.name : `Scene from ${new Date(scene.createdAt).toLocaleDateString()}`}
+                  </div>
+                  <div className="text-xs text-neutral-500 flex items-center gap-2">
+                    <span>{new Date(scene.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    {!scene.hasPrompt && <span className="text-neutral-600">(no name saved)</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -409,6 +539,8 @@ function LoadSampleButton() {
 // ============================================================================
 
 export default function ComposerPage() {
+  const scenePreviewRef = useRef<ScenePreviewHandle>(null);
+
   const handleSavePreset = (name: string) => {
     // TODO: Implement API call to save preset
     console.log('Save preset:', name);
@@ -443,7 +575,7 @@ export default function ComposerPage() {
             <Section title="Prompt">
               <PromptInput />
               <div className="mt-4 space-y-3">
-                <GenerateButton />
+                <GenerateButton scenePreviewRef={scenePreviewRef} />
                 <DecomposedPromptsDisplay />
                 <LoadSampleButton />
               </div>
@@ -469,7 +601,7 @@ export default function ComposerPage() {
 
         {/* Main Content - 3D Preview */}
         <main className="flex-1 p-4">
-          <ScenePreview className="h-full" />
+          <ScenePreview ref={scenePreviewRef} className="h-full" />
         </main>
 
         {/* Right Panel - Info (optional, could be expanded) */}

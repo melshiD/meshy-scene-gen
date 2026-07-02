@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useRef, useEffect, useMemo } from 'react';
+import { Suspense, useRef, useEffect, useMemo, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import {
   OrbitControls,
@@ -12,6 +12,7 @@ import {
 import * as THREE from 'three';
 import { useComposerStore } from '@/stores/composer-store';
 import type { SceneObject as SceneObjectType } from '@/types';
+import { captureMultiResolution, type MultiCaptureResult } from '@/lib/scene/capture';
 
 // ============================================================================
 // Scene Object Component
@@ -273,8 +274,33 @@ function MultiObjectRenderer() {
 }
 
 // ============================================================================
+// Capture Handler (inside Canvas)
+// ============================================================================
+
+interface CaptureHandlerProps {
+  onCaptureReady: (captureFn: () => Promise<MultiCaptureResult>) => void;
+}
+
+function CaptureHandler({ onCaptureReady }: CaptureHandlerProps) {
+  const { gl, scene, camera } = useThree();
+
+  useEffect(() => {
+    const captureFn = async () => {
+      return captureMultiResolution(gl, scene, camera);
+    };
+    onCaptureReady(captureFn);
+  }, [gl, scene, camera, onCaptureReady]);
+
+  return null;
+}
+
+// ============================================================================
 // Main Scene Preview Component
 // ============================================================================
+
+export interface ScenePreviewHandle {
+  capture: () => Promise<MultiCaptureResult>;
+}
 
 export interface ScenePreviewProps {
   className?: string;
@@ -282,76 +308,94 @@ export interface ScenePreviewProps {
   legacyMode?: boolean;
 }
 
-export function ScenePreview({ className = '', legacyMode = false }: ScenePreviewProps) {
-  const meshUrl = useComposerStore((state) => state.meshUrl);
-  const backgroundUrl = useComposerStore((state) => state.backgroundUrl);
-  const camera = useComposerStore((state) => state.camera);
-  const objects = useComposerStore((state) => state.objects);
-  const selectedObjectId = useComposerStore((state) => state.selectedObjectId);
+export const ScenePreview = forwardRef<ScenePreviewHandle, ScenePreviewProps>(
+  function ScenePreview({ className = '', legacyMode = false }, ref) {
+    const meshUrl = useComposerStore((state) => state.meshUrl);
+    const backgroundUrl = useComposerStore((state) => state.backgroundUrl);
+    const camera = useComposerStore((state) => state.camera);
+    const objects = useComposerStore((state) => state.objects);
+    const selectedObjectId = useComposerStore((state) => state.selectedObjectId);
 
-  return (
-    <div className={`relative w-full h-full min-h-[400px] bg-neutral-900 rounded-lg overflow-hidden ${className}`}>
-      <Canvas
-        shadows
-        camera={{
-          position: [camera.position.x, camera.position.y, camera.position.z],
-          fov: camera.fov,
-          near: 0.1,
-          far: 1000,
-        }}
-        gl={{ preserveDrawingBuffer: true }}
-      >
-        <CameraController />
-        <SceneLighting />
+    const captureRef = useRef<(() => Promise<MultiCaptureResult>) | null>(null);
 
-        <Suspense fallback={<LoadingFallback />}>
-          {legacyMode ? (
-            <LegacySceneObject url={meshUrl} />
-          ) : (
-            <MultiObjectRenderer />
+    const handleCaptureReady = useCallback((captureFn: () => Promise<MultiCaptureResult>) => {
+      captureRef.current = captureFn;
+    }, []);
+
+    useImperativeHandle(ref, () => ({
+      capture: async () => {
+        if (!captureRef.current) {
+          throw new Error('Capture not ready - scene not initialized');
+        }
+        return captureRef.current();
+      },
+    }), []);
+
+    return (
+      <div className={`relative w-full h-full min-h-[400px] bg-neutral-900 rounded-lg overflow-hidden ${className}`}>
+        <Canvas
+          shadows
+          camera={{
+            position: [camera.position.x, camera.position.y, camera.position.z],
+            fov: camera.fov,
+            near: 0.1,
+            far: 1000,
+          }}
+          gl={{ preserveDrawingBuffer: true }}
+        >
+          <CaptureHandler onCaptureReady={handleCaptureReady} />
+          <CameraController />
+          <SceneLighting />
+
+          <Suspense fallback={<LoadingFallback />}>
+            {legacyMode ? (
+              <LegacySceneObject url={meshUrl} />
+            ) : (
+              <MultiObjectRenderer />
+            )}
+            <BackgroundPlane url={backgroundUrl} />
+          </Suspense>
+
+          {/* Helper grid */}
+          <Grid
+            args={[10, 10]}
+            cellSize={0.5}
+            cellThickness={0.5}
+            cellColor="#333"
+            sectionSize={2}
+            sectionThickness={1}
+            sectionColor="#555"
+            fadeDistance={15}
+            fadeStrength={1}
+            followCamera={false}
+            infiniteGrid
+          />
+
+          {/* Environment for reflections */}
+          <Environment preset="city" />
+
+          {/* Controls */}
+          <OrbitControls
+            makeDefault
+            enablePan
+            enableZoom
+            enableRotate
+            minDistance={1}
+            maxDistance={20}
+          />
+        </Canvas>
+
+        {/* Overlay info */}
+        <div className="absolute bottom-2 left-2 text-xs text-neutral-500">
+          {objects.length > 1 && (
+            <span className="mr-2 text-indigo-400">
+              {objects.length} objects
+              {selectedObjectId && ` | Selected: ${objects.find(o => o.id === selectedObjectId)?.name}`}
+            </span>
           )}
-          <BackgroundPlane url={backgroundUrl} />
-        </Suspense>
-
-        {/* Helper grid */}
-        <Grid
-          args={[10, 10]}
-          cellSize={0.5}
-          cellThickness={0.5}
-          cellColor="#333"
-          sectionSize={2}
-          sectionThickness={1}
-          sectionColor="#555"
-          fadeDistance={15}
-          fadeStrength={1}
-          followCamera={false}
-          infiniteGrid
-        />
-
-        {/* Environment for reflections */}
-        <Environment preset="city" />
-
-        {/* Controls */}
-        <OrbitControls
-          makeDefault
-          enablePan
-          enableZoom
-          enableRotate
-          minDistance={1}
-          maxDistance={20}
-        />
-      </Canvas>
-
-      {/* Overlay info */}
-      <div className="absolute bottom-2 left-2 text-xs text-neutral-500">
-        {objects.length > 1 && (
-          <span className="mr-2 text-indigo-400">
-            {objects.length} objects
-            {selectedObjectId && ` | Selected: ${objects.find(o => o.id === selectedObjectId)?.name}`}
-          </span>
-        )}
-        Drag to orbit | Scroll to zoom | Shift+drag to pan
+          Drag to orbit | Scroll to zoom | Shift+drag to pan
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
+);

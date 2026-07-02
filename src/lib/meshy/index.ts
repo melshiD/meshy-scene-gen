@@ -25,6 +25,7 @@ export {
   // Additional utilities
   getMeshTaskStatus,
   generateMesh,
+  generateTexturedMesh,
 
   // Error handling
   MeshyError,
@@ -32,6 +33,7 @@ export {
   // Types
   type CreateMeshTaskOptions,
   type WaitForMeshOptions,
+  type GenerateTexturedMeshOptions,
   type MeshFormat,
   type MeshyErrorCode,
 } from './client';

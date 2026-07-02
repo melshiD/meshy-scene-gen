@@ -55,6 +55,7 @@ export {
   generateCaptureKey,
   generateBackgroundKey,
   generateMeshKey,
+  generateManifestKey,
   generateUniqueFilename,
   parseStorageKey,
   sanitizeFilename,

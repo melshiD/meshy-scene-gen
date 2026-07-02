@@ -2,7 +2,7 @@
  * API client for generation endpoints
  */
 
-import type { GenerateRequest, JobStatus } from '@/types';
+import type { GenerateRequest, JobStatus, CaptureSceneConfig, CapturesUploadRequest } from '@/types';
 
 // ============================================================================
 // Types
@@ -31,6 +31,8 @@ export interface SingleJobStatusResponse {
     thumb: string;
   };
   meshUrl?: string;
+  backgroundUrl?: string;
+  manifestUrl?: string;
   error?: string;
   createdAt: string;
   completedAt?: string;
@@ -108,6 +110,9 @@ export async function getJobStatus(jobId: string): Promise<JobStatusResponse> {
 
 /**
  * Poll a job until completion or failure
+ *
+ * For single-object jobs, also returns when meshUrl and backgroundUrl are available
+ * (server-side complete, ready for client-side capture).
  */
 export async function pollJobUntilComplete(
   jobId: string,
@@ -115,9 +120,11 @@ export async function pollJobUntilComplete(
     intervalMs?: number;
     maxAttempts?: number;
     onProgress?: (status: JobStatusResponse) => void;
+    /** If true, also return when assets are ready but status is still 'processing' */
+    returnOnAssetsReady?: boolean;
   } = {}
 ): Promise<JobStatusResponse> {
-  const { intervalMs = 2000, maxAttempts = 300, onProgress } = options;
+  const { intervalMs = 2000, maxAttempts = 300, onProgress, returnOnAssetsReady = true } = options;
 
   let attempts = 0;
 
@@ -127,9 +134,18 @@ export async function pollJobUntilComplete(
     // Call progress callback
     onProgress?.(status);
 
-    // Check if job is complete
+    // Check if job is complete or failed
     if (status.status === 'completed' || status.status === 'failed') {
       return status;
+    }
+
+    // For single-object jobs: check if server-side generation is complete (assets ready)
+    if (returnOnAssetsReady && status.type === 'single') {
+      const singleStatus = status as SingleJobStatusResponse;
+      if (singleStatus.meshUrl && singleStatus.backgroundUrl) {
+        // Assets are ready - server-side complete
+        return status;
+      }
     }
 
     // Wait before next poll
@@ -143,6 +159,112 @@ export async function pollJobUntilComplete(
 /**
  * Determine the current generation stage from job status
  */
+/** Response from POST /api/captures */
+export interface CapturesResponse {
+  success: boolean;
+  assets: {
+    full: string;
+    web: string;
+    thumb: string;
+  };
+  manifestUrl?: string;
+}
+
+/**
+ * Upload captured scene images with scene configuration
+ */
+export async function uploadCaptures(
+  jobId: string,
+  captures: {
+    full: string;  // base64 data URL
+    web: string;
+    thumb: string;
+  },
+  sceneConfig?: CaptureSceneConfig,
+  metadata?: { tags?: string[]; custom?: Record<string, unknown> }
+): Promise<CapturesResponse> {
+  const body: CapturesUploadRequest = {
+    jobId,
+    captures,
+    sceneConfig,
+    metadata,
+  };
+
+  const response = await fetch('/api/captures', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error: ErrorResponse = await response.json();
+    throw new Error(error.error || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Build CaptureSceneConfig from composer store state
+ */
+export function buildSceneConfigFromState(state: {
+  camera: { position: { x: number; y: number; z: number }; fov: number; lookAt: { x: number; y: number; z: number } };
+  lighting: { preset: string; intensity: number; color: string };
+  object?: { position: { x: number; y: number; z: number }; scale: number; rotation: { x: number; y: number; z: number } };
+  objects?: Array<{
+    id: string;
+    name: string;
+    prompt?: string;
+    artStyle?: string;
+    position: { x: number; y: number; z: number };
+    scale: number;
+    rotation: { x: number; y: number; z: number };
+    visible: boolean;
+  }>;
+}): CaptureSceneConfig {
+  const config: CaptureSceneConfig = {
+    camera: {
+      position: state.camera.position,
+      fov: state.camera.fov,
+      lookAt: state.camera.lookAt,
+    },
+    lighting: {
+      preset: state.lighting.preset as CaptureSceneConfig['lighting']['preset'],
+      intensity: state.lighting.intensity,
+      color: state.lighting.color,
+    },
+  };
+
+  // For single object scenes
+  if (state.object && (!state.objects || state.objects.length === 1)) {
+    config.object = {
+      position: state.object.position,
+      scale: state.object.scale,
+      rotation: state.object.rotation,
+    };
+  }
+
+  // For multi-object scenes
+  if (state.objects && state.objects.length > 1) {
+    config.objects = state.objects.map(obj => ({
+      id: obj.id,
+      name: obj.name,
+      prompt: obj.prompt ?? '',
+      artStyle: obj.artStyle as CaptureSceneConfig['objects'] extends Array<infer T> ? T extends { artStyle?: infer A } ? A : never : never,
+      transform: {
+        position: obj.position,
+        scale: obj.scale,
+        rotation: obj.rotation,
+      },
+      visible: obj.visible,
+    }));
+  }
+
+  return config;
+}
+
 export function getStageFromJobStatus(
   status: JobStatusResponse
 ): 'starting' | 'decomposing' | 'generating-mesh' | 'generating-background' | 'composing' | 'completed' | 'failed' {

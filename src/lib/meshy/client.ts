@@ -177,6 +177,12 @@ export interface CreateMeshTaskOptions {
   artStyle?: MeshyArtStyle;
   negativePrompt?: string;
   mode?: 'preview' | 'refine';
+  /** For refine mode: the preview task ID to refine */
+  previewTaskId?: string;
+  /** For refine mode: enable PBR maps (metallic, roughness, normal) */
+  enablePbr?: boolean;
+  /** For refine mode: additional text prompt to guide texturing */
+  texturePrompt?: string;
 }
 
 /** Response from Meshy task creation */
@@ -190,8 +196,41 @@ interface MeshyCreateResponse {
 export async function createMeshTask(
   options: CreateMeshTaskOptions
 ): Promise<MeshyTask> {
-  const { prompt, artStyle = 'realistic', negativePrompt, mode = 'preview' } = options;
+  const {
+    prompt,
+    artStyle = 'realistic',
+    negativePrompt,
+    mode = 'preview',
+    previewTaskId,
+    enablePbr = true,
+    texturePrompt,
+  } = options;
 
+  if (mode === 'refine') {
+    if (!previewTaskId) {
+      throw new MeshyError('previewTaskId is required for refine mode', 'API_ERROR');
+    }
+    console.log(`[MESHY] Creating refine task for preview: ${previewTaskId} (enable_pbr: ${enablePbr})`);
+
+    const requestBody = {
+      mode: 'refine',
+      preview_task_id: previewTaskId,
+      enable_pbr: enablePbr,
+      ...(texturePrompt && { texture_prompt: texturePrompt }),
+    };
+
+    const response = await withRetry(() =>
+      meshyFetch<MeshyCreateResponse>('/text-to-3d', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      })
+    );
+
+    console.log(`[MESHY] Refine task created: ${response.result}`);
+    return getMeshTaskStatus(response.result);
+  }
+
+  // Preview mode
   console.log(`[MESHY] Creating task: "${prompt}" (art_style: ${artStyle}, mode: ${mode})`);
 
   const requestBody: MeshyCreateTaskRequest = {
@@ -353,4 +392,90 @@ export async function generateMesh(
     maxWaitTimeMs,
     onProgress,
   });
+}
+
+export interface GenerateTexturedMeshOptions {
+  prompt: string;
+  artStyle?: MeshyArtStyle;
+  negativePrompt?: string;
+  /** Enable PBR maps (metallic, roughness, normal). Defaults to true. */
+  enablePbr?: boolean;
+  /** Additional text prompt to guide the texturing process */
+  texturePrompt?: string;
+  /** Poll interval in milliseconds */
+  pollIntervalMs?: number;
+  /** Max wait time in milliseconds */
+  maxWaitTimeMs?: number;
+  /** Progress callback for preview stage and refine stage */
+  onProgress?: (task: MeshyTask, stage: 'preview' | 'refine') => void;
+}
+
+/**
+ * Generate a fully textured mesh using preview → refine workflow
+ *
+ * This is the recommended way to generate high-quality textured meshes.
+ * The workflow:
+ * 1. Create preview task (generates untextured geometry)
+ * 2. Wait for preview to complete
+ * 3. Create refine task (adds textures based on prompt)
+ * 4. Wait for refine to complete
+ * 5. Return the textured mesh
+ */
+export async function generateTexturedMesh(
+  options: GenerateTexturedMeshOptions
+): Promise<MeshyTask> {
+  const {
+    prompt,
+    artStyle,
+    negativePrompt,
+    enablePbr = true,
+    texturePrompt,
+    pollIntervalMs,
+    maxWaitTimeMs,
+    onProgress,
+  } = options;
+
+  console.log(`[MESHY] Starting textured mesh generation: "${prompt}"`);
+
+  // Stage 1: Preview (geometry generation)
+  console.log('[MESHY] Stage 1: Creating preview task...');
+  const previewTask = await createMeshTask({
+    prompt,
+    artStyle,
+    negativePrompt,
+    mode: 'preview',
+  });
+
+  const completedPreview = await waitForMesh(previewTask.id, {
+    pollIntervalMs,
+    maxWaitTimeMs,
+    onProgress: (task) => {
+      onProgress?.(task, 'preview');
+    },
+  });
+
+  console.log(`[MESHY] Stage 1 complete: Preview task ${completedPreview.id}`);
+
+  // Stage 2: Refine (texture generation)
+  console.log('[MESHY] Stage 2: Creating refine task...');
+  const refineTask = await createMeshTask({
+    prompt, // Not used for refine, but kept for type consistency
+    mode: 'refine',
+    previewTaskId: completedPreview.id,
+    enablePbr,
+    texturePrompt: texturePrompt ?? prompt, // Use original prompt if no texture prompt
+  });
+
+  const completedRefine = await waitForMesh(refineTask.id, {
+    pollIntervalMs,
+    maxWaitTimeMs,
+    onProgress: (task) => {
+      onProgress?.(task, 'refine');
+    },
+  });
+
+  console.log(`[MESHY] Stage 2 complete: Refine task ${completedRefine.id}`);
+  console.log(`[MESHY] Textured mesh ready: ${completedRefine.model_urls?.glb ?? 'no URL'}`);
+
+  return completedRefine;
 }
