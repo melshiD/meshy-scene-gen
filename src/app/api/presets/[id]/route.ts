@@ -17,7 +17,7 @@ interface RouteParams {
 export async function GET(request: Request, { params }: RouteParams) {
   try {
     const { id } = await params;
-    const preset = getPreset(id);
+    const preset = await getPreset(id);
 
     if (!preset) {
       return NextResponse.json(
@@ -60,7 +60,7 @@ export async function DELETE(request: Request, { params }: RouteParams) {
       );
     }
 
-    const deleted = deletePreset(id);
+    const deleted = await deletePreset(id);
 
     if (!deleted) {
       return NextResponse.json(

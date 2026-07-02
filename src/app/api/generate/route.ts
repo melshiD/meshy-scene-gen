@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       console.log(`[API] POST /api/generate - Multi-object request (${body.objects.length} objects)`);
       console.log(`[API] Background: "${body.backgroundPrompt}"`);
 
-      const validation = validateMultiObjectRequest(body);
+      const validation = await validateMultiObjectRequest(body);
       if (!validation.valid) {
         console.log(`[API] Validation failed: ${validation.error}`);
         return NextResponse.json(
@@ -63,7 +63,7 @@ export async function POST(request: Request) {
       console.log(`[API] POST /api/generate - Single-object request`);
       console.log(`[API] Prompt: "${prompt}"`);
 
-      const validation = validateRequest(body);
+      const validation = await validateRequest(body);
       if (!validation.valid) {
         console.log(`[API] Validation failed: ${validation.error}`);
         return NextResponse.json(

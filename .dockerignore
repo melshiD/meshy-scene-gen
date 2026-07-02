@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.env
+.env.local
+*.log
+npm-debug.log*
+.DS_Store
+*.tmp
+tsconfig.tsbuildinfo
+public/generated
+nul
+NEXT_SESSION_LOG_*.md
+.claude

@@ -1,0 +1,29 @@
+# meshy-scene-gen on lodestar-core-1. Joins the shared lodestar_apps bridge so it can reach
+# LiteLLM (http://litellm:4000) and core-Postgres (core-postgres:5432). STATELESS container:
+# job/preset metadata lives in core-PG, binary assets in Cloudflare R2 — no volumes.
+# Secrets come from .env (generated on the box by gen-env.sh from the vault). Nothing secret here.
+
+services:
+  meshy-scene-gen:
+    container_name: lodestar-meshy-scene-gen
+    build: .
+    image: lodestar/meshy-scene-gen:local
+    restart: unless-stopped
+    env_file: .env            # LiteLLM virtual key + MESHY/R2 creds + DATABASE_URL + STORAGE_PUBLIC_URL
+    networks:
+      - lodestar_apps
+    # Loopback publish for operator testing; public exposure is operator-gated (Dave-initiated only).
+    # App-to-app traffic uses the in-cluster name (http://meshy-scene-gen:3000), no publish needed.
+    ports:
+      - "127.0.0.1:3002:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+networks:
+  # Shared app bridge, created once by the LiteLLM deploy (docker network create lodestar_apps).
+  lodestar_apps:
+    external: true

@@ -8,6 +8,7 @@
 import type { MultiCaptureResult } from '@/lib/scene';
 import type { StorageProvider, CaptureUploadResult, StorageConfig } from './types';
 import { FilesystemStorageProvider } from './filesystem';
+import { R2StorageProvider } from './r2';
 import {
   generateCaptureKey,
   generateBackgroundKey,
@@ -36,12 +37,15 @@ export function getStorage(): StorageProvider {
       process.env.R2_BUCKET_NAME;
 
     if (hasR2Config) {
-      // TODO: Return R2StorageProvider when implemented
-      // storageProvider = new R2StorageProvider({...});
-      console.log('R2 config detected but not yet implemented, falling back to filesystem');
+      // Production: assets live in Cloudflare R2 (S3-compatible). Public URLs come from
+      // STORAGE_PUBLIC_URL (the bucket's public domain). This is the path on lodestar-core-1.
+      storageProvider = new R2StorageProvider({
+        publicUrl: process.env.STORAGE_PUBLIC_URL,
+      });
+      return storageProvider;
     }
 
-    // Default to filesystem storage
+    // Default (local dev): filesystem storage under public/generated.
     const config: StorageConfig = {
       publicUrl: process.env.STORAGE_PUBLIC_URL ?? '/generated',
       basePath: 'public/generated',
@@ -151,6 +155,12 @@ export async function persistBackground(temporaryUrl: string, jobId: string): Pr
   return result.url;
 }
 
+export interface PersistMeshOptions {
+  format?: 'glb' | 'fbx' | 'usdz' | 'obj';
+  /** The prompt used to generate this mesh (for display/search) */
+  prompt?: string;
+}
+
 /**
  * Persist a 3D mesh from the Meshy CDN
  *
@@ -159,15 +169,21 @@ export async function persistBackground(temporaryUrl: string, jobId: string): Pr
  *
  * @param meshyUrl - The Meshy CDN URL for the mesh
  * @param jobId - The job identifier for organizing storage
- * @param format - The mesh format (default: 'glb')
+ * @param options - Optional format and prompt for metadata
  * @returns Persistent URL for the mesh file
  */
 export async function persistMesh(
   meshyUrl: string,
   jobId: string,
-  format: 'glb' | 'fbx' | 'usdz' | 'obj' = 'glb'
+  options?: PersistMeshOptions | 'glb' | 'fbx' | 'usdz' | 'obj'
 ): Promise<string> {
   const storage = getStorage();
+
+  // Handle both old signature (format string) and new signature (options object)
+  const opts: PersistMeshOptions = typeof options === 'string'
+    ? { format: options }
+    : options ?? {};
+  const { format = 'glb', prompt } = opts;
 
   // Download from Meshy CDN
   const blob = await downloadWithRetry(meshyUrl, 3);
@@ -180,6 +196,7 @@ export async function persistMesh(
       originalUrl: meshyUrl,
       persistedAt: new Date().toISOString(),
       format,
+      ...(prompt && { prompt }),
     },
   });
 

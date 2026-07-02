@@ -7,13 +7,16 @@ import type {
   LayoutConfig,
   SceneObject,
   MeshyArtStyle,
+  MeshyTask,
 } from '@/types';
 import { decomposePrompt, createManualPrompt, generateBackgroundWithMood, generateBackground } from '@/lib/image-gen';
-import { generateMesh, getMeshUrl, type CreateMeshTaskOptions } from '@/lib/meshy';
+import { generateMesh, generateTexturedMesh, getMeshUrl, type CreateMeshTaskOptions } from '@/lib/meshy';
 // NOTE: Scene composition (Three.js) happens client-side now
 // The server generates mesh + background, client loads them and captures
 import { buildSceneConfig, getPreset, type SceneConfigOverrides } from '@/lib/presets';
 import { persistBackground, persistMesh } from '@/lib/storage';
+import { generateBackgroundKey, generateMeshKey } from '@/lib/storage/utils';
+import { ManifestBuilder } from '@/lib/manifest';
 import {
   createJob,
   updateJobStatus,
@@ -22,6 +25,7 @@ import {
   completeServerSideJob,
   failJob,
   getJob,
+  setManifestBuilder,
   createMultiObjectJob,
   getMultiObjectJob,
   updateMultiObjectJobStatus,
@@ -100,6 +104,16 @@ export async function parsePrompts(
   throw new Error('Either prompt or objectPrompt+backgroundPrompt must be provided');
 }
 
+export interface GenerateAssetsOptions extends Pick<GenerateAssetOptions, 'onProgress' | 'meshArtStyle'> {
+  /**
+   * Whether to generate textured mesh (preview → refine workflow).
+   * Default: true. Set to false for faster but untextured mesh.
+   */
+  textured?: boolean;
+  /** Additional prompt to guide texturing (uses object prompt if not provided) */
+  texturePrompt?: string;
+}
+
 /**
  * Generate 3D mesh and background image in parallel
  */
@@ -107,22 +121,39 @@ export async function generateAssets(
   objectPrompt: string,
   backgroundPrompt: string,
   mood: string,
-  options?: Pick<GenerateAssetOptions, 'onProgress' | 'meshArtStyle'>
+  options?: GenerateAssetsOptions
 ): Promise<{ meshUrl: string; backgroundUrl: string }> {
-  const { onProgress, meshArtStyle = 'realistic' } = options ?? {};
+  const { onProgress, meshArtStyle = 'realistic', textured = true, texturePrompt } = options ?? {};
 
   console.log('[PIPELINE] Stage start: parallel asset generation (mesh + background)');
+  console.log(`[PIPELINE] Textured mesh: ${textured ? 'yes (preview → refine)' : 'no (preview only)'}`);
 
   // Run Meshy and DALL-E in parallel
+  // For textured meshes, we use preview → refine workflow
+  const meshPromise = textured
+    ? generateTexturedMesh({
+        prompt: objectPrompt,
+        artStyle: meshArtStyle,
+        texturePrompt: texturePrompt ?? objectPrompt,
+        enablePbr: true,
+        onProgress: (task: MeshyTask, stage: 'preview' | 'refine') => {
+          // Map preview (0-100) to 0-50, refine (0-100) to 50-100
+          const baseProgress = stage === 'preview' ? 0 : 50;
+          const stageProgress = (task.progress ?? 0) / 2;
+          onProgress?.('mesh', baseProgress + stageProgress);
+        },
+      })
+    : generateMesh({
+        prompt: objectPrompt,
+        artStyle: meshArtStyle,
+        mode: 'preview',
+        onProgress: (task) => {
+          onProgress?.('mesh', task.progress ?? 0);
+        },
+      });
+
   const [meshTask, bgResult] = await Promise.all([
-    generateMesh({
-      prompt: objectPrompt,
-      artStyle: meshArtStyle,
-      mode: 'preview',
-      onProgress: (task) => {
-        onProgress?.('mesh', task.progress ?? 0);
-      },
-    }),
+    meshPromise,
     generateBackgroundWithMood(backgroundPrompt, mood).then((result) => {
       onProgress?.('background', 100);
       return result;
@@ -184,7 +215,7 @@ export async function generateAsset(
   );
 
   // Step 3: Build scene configuration
-  const sceneConfig = buildSceneConfig(
+  const sceneConfig = await buildSceneConfig(
     request.preset,
     backgroundUrl,
     meshUrl,
@@ -192,7 +223,7 @@ export async function generateAsset(
   );
 
   // Create a job record for tracking
-  const job = createJob({
+  const job = await createJob({
     prompt: request.prompt ?? `${objectPrompt} on ${backgroundPrompt}`,
     objectPrompt,
     backgroundPrompt,
@@ -219,7 +250,7 @@ export async function startGenerationJob(
 ): Promise<string> {
   // Create job entry first
   const prompt = request.prompt ?? `${request.objectPrompt} on ${request.backgroundPrompt}`;
-  const job = createJob({
+  const job = await createJob({
     prompt,
     objectPrompt: request.objectPrompt,
     backgroundPrompt: request.backgroundPrompt,
@@ -233,9 +264,9 @@ export async function startGenerationJob(
   }
 
   // Start async generation (don't await)
-  processJob(job.id, request, options).catch((error) => {
+  processJob(job.id, request, options).catch(async (error) => {
     console.error(`[PIPELINE] Job ${job.id} failed:`, error);
-    failJob(job.id, error instanceof Error ? error.message : 'Unknown error');
+    await failJob(job.id, error instanceof Error ? error.message : 'Unknown error');
   });
 
   return job.id;
@@ -262,14 +293,37 @@ async function processJob(
   options?: GenerateAssetOptions
 ): Promise<void> {
   console.log(`[PIPELINE] Job ${jobId} processing started`);
-  updateJobStatus(jobId, 'processing');
+  await updateJobStatus(jobId, 'processing');
+
+  // Initialize ManifestBuilder for this job
+  const builder = new ManifestBuilder(jobId, 'single');
+  setManifestBuilder(jobId, builder);
 
   try {
     // Parse prompts
     const { objectPrompt, backgroundPrompt, mood } = await parsePrompts(request);
 
     // Store decomposed prompts in job for UI display
-    updateJobDecomposedPrompts(jobId, objectPrompt, backgroundPrompt, mood);
+    await updateJobDecomposedPrompts(jobId, objectPrompt, backgroundPrompt, mood);
+
+    // Set prompt information in manifest
+    builder.setPrompts({
+      original: request.prompt,
+      object: objectPrompt,
+      background: backgroundPrompt,
+      mood,
+      decomposed: !!request.prompt && !request.objectPrompt,
+    });
+
+    // Set generation parameters in manifest
+    builder.setGeneration({
+      presetId: request.preset,
+      meshArtStyle: options?.meshArtStyle ?? 'realistic',
+      captureSize: { width: 2048, height: 2048 },
+    });
+
+    // Mark mesh generation started
+    builder.markMeshStarted();
 
     // Generate assets (mesh and background in parallel)
     const { meshUrl: tempMeshUrl, backgroundUrl: tempBackgroundUrl } = await generateAssets(
@@ -279,24 +333,45 @@ async function processJob(
       options
     );
 
+    // Mark mesh and background completed
+    builder.markMeshCompleted();
+    builder.markBackgroundCompleted();
+
     // Persist background and mesh to storage in parallel
     // This ensures URLs remain valid after DALL-E/Meshy CDN expiry
     console.log('[PIPELINE] Stage start: persisting assets to storage');
     const [persistentBackgroundUrl, persistentMeshUrl] = await Promise.all([
       persistBackground(tempBackgroundUrl, jobId),
-      persistMesh(tempMeshUrl, jobId, 'glb'),
+      persistMesh(tempMeshUrl, jobId, { format: 'glb', prompt: objectPrompt }),
     ]);
     console.log('[PIPELINE] Stage complete: assets persisted');
     console.log(`[PIPELINE] Mesh URL: ${persistentMeshUrl}`);
     console.log(`[PIPELINE] Background URL: ${persistentBackgroundUrl}`);
 
+    // Set asset references in manifest
+    builder.setBackgroundAsset({
+      url: persistentBackgroundUrl,
+      key: generateBackgroundKey(jobId),
+      originalUrl: tempBackgroundUrl,
+      contentType: 'image/png',
+      persistedAt: new Date().toISOString(),
+    });
+
+    builder.setMeshAsset({
+      url: persistentMeshUrl,
+      key: generateMeshKey(jobId, 'glb'),
+      originalUrl: tempMeshUrl,
+      contentType: 'model/gltf-binary',
+      persistedAt: new Date().toISOString(),
+    });
+
     // Mark server-side complete - client will load assets and capture
     // Job stays in 'processing' status until client POSTs captures
-    completeServerSideJob(jobId, persistentMeshUrl, persistentBackgroundUrl);
+    await completeServerSideJob(jobId, persistentMeshUrl, persistentBackgroundUrl);
     console.log(`[PIPELINE] Job ${jobId} server-side complete, awaiting client capture`);
   } catch (error) {
     console.log(`[PIPELINE] Job ${jobId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
+    await failJob(jobId, error instanceof Error ? error.message : 'Unknown error');
     throw error;
   }
 }
@@ -304,14 +379,16 @@ async function processJob(
 /**
  * Get job status and results
  */
-export function getJobStatus(jobId: string): GeneratedAsset | undefined {
+export async function getJobStatus(jobId: string): Promise<GeneratedAsset | undefined> {
   return getJob(jobId);
 }
 
 /**
  * Validate a generate request
  */
-export function validateRequest(request: GenerateRequest): { valid: boolean; error?: string } {
+export async function validateRequest(
+  request: GenerateRequest
+): Promise<{ valid: boolean; error?: string }> {
   // Must have either prompt or both objectPrompt and backgroundPrompt
   if (!request.prompt && (!request.objectPrompt || !request.backgroundPrompt)) {
     return {
@@ -321,7 +398,7 @@ export function validateRequest(request: GenerateRequest): { valid: boolean; err
   }
 
   // If preset specified, verify it exists
-  if (request.preset && !getPreset(request.preset)) {
+  if (request.preset && !(await getPreset(request.preset))) {
     return {
       valid: false,
       error: `Preset "${request.preset}" not found`,
@@ -349,9 +426,9 @@ export interface MultiObjectGenerateOptions {
 /**
  * Validate a multi-object generate request
  */
-export function validateMultiObjectRequest(
+export async function validateMultiObjectRequest(
   request: MultiObjectGenerateRequest
-): { valid: boolean; error?: string } {
+): Promise<{ valid: boolean; error?: string }> {
   if (!request.backgroundPrompt) {
     return { valid: false, error: 'backgroundPrompt is required' };
   }
@@ -376,7 +453,7 @@ export function validateMultiObjectRequest(
   }
 
   // Validate scene preset if provided
-  if (request.scenePreset && !getPreset(request.scenePreset)) {
+  if (request.scenePreset && !(await getPreset(request.scenePreset))) {
     return { valid: false, error: `Scene preset "${request.scenePreset}" not found` };
   }
 
@@ -403,7 +480,7 @@ export async function startMultiObjectGenerationJob(
   options?: MultiObjectGenerateOptions
 ): Promise<string> {
   // Create job entry
-  const job = createMultiObjectJob({
+  const job = await createMultiObjectJob({
     backgroundPrompt: request.backgroundPrompt,
     objects: request.objects,
     layoutPreset: request.layoutPreset,
@@ -418,9 +495,9 @@ export async function startMultiObjectGenerationJob(
   });
 
   // Start async generation (don't await)
-  processMultiObjectJob(job.id, request, options).catch((error) => {
+  processMultiObjectJob(job.id, request, options).catch(async (error) => {
     console.error(`[PIPELINE] Multi-object job ${job.id} failed:`, error);
-    failMultiObjectJob(job.id, error instanceof Error ? error.message : 'Unknown error');
+    await failMultiObjectJob(job.id, error instanceof Error ? error.message : 'Unknown error');
   });
 
   return job.id;
@@ -435,9 +512,9 @@ async function processMultiObjectJob(
   options?: MultiObjectGenerateOptions
 ): Promise<void> {
   console.log(`[PIPELINE] Multi-object job ${jobId} processing started`);
-  updateMultiObjectJobStatus(jobId, 'processing');
+  await updateMultiObjectJobStatus(jobId, 'processing');
 
-  const job = getMultiObjectJob(jobId);
+  const job = await getMultiObjectJob(jobId);
   if (!job) {
     throw new Error(`Job ${jobId} not found`);
   }
@@ -455,15 +532,15 @@ async function processMultiObjectJob(
     console.log('[PIPELINE] Stage complete: all parallel generations finished');
 
     // Check completion and update job status
-    if (isMultiObjectJobComplete(jobId)) {
-      completeMultiObjectJob(jobId);
+    if (await isMultiObjectJobComplete(jobId)) {
+      await completeMultiObjectJob(jobId);
       console.log(`[PIPELINE] Multi-object job ${jobId} completed successfully`);
     }
 
-    options?.onProgress?.(jobId, getMultiObjectJobProgress(jobId));
+    options?.onProgress?.(jobId, await getMultiObjectJobProgress(jobId));
   } catch (error) {
     console.log(`[PIPELINE] Multi-object job ${jobId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    failMultiObjectJob(jobId, error instanceof Error ? error.message : 'Unknown error');
+    await failMultiObjectJob(jobId, error instanceof Error ? error.message : 'Unknown error');
     throw error;
   }
 }
@@ -473,13 +550,13 @@ async function processMultiObjectJob(
  */
 async function generateBackgroundAsync(jobId: string, prompt: string): Promise<string | null> {
   console.log(`[PIPELINE] Background generation started for job ${jobId}`);
-  updateBackgroundStatus(jobId, 'processing');
+  await updateBackgroundStatus(jobId, 'processing');
 
   try {
     const result = await generateBackground(prompt);
     if (!result.success) {
       console.log(`[PIPELINE] Background generation failed for job ${jobId}: ${result.error}`);
-      updateBackgroundStatus(jobId, 'failed', undefined, result.error);
+      await updateBackgroundStatus(jobId, 'failed', undefined, result.error);
       return null;
     }
 
@@ -487,12 +564,12 @@ async function generateBackgroundAsync(jobId: string, prompt: string): Promise<s
     console.log(`[PIPELINE] Persisting background for job ${jobId}`);
     const persistentUrl = await persistBackground(result.url, jobId);
     console.log(`[PIPELINE] Background complete for job ${jobId}`);
-    updateBackgroundStatus(jobId, 'completed', persistentUrl);
+    await updateBackgroundStatus(jobId, 'completed', persistentUrl);
     return persistentUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Background generation failed';
     console.log(`[PIPELINE] Background generation error for job ${jobId}: ${message}`);
-    updateBackgroundStatus(jobId, 'failed', undefined, message);
+    await updateBackgroundStatus(jobId, 'failed', undefined, message);
     return null;
   }
 }
@@ -507,7 +584,7 @@ async function generateObjectAsync(
   artStyle: MeshyArtStyle
 ): Promise<string | null> {
   console.log(`[PIPELINE] Object ${objectId} generation started: "${prompt}"`);
-  updateObjectStatus(jobId, objectId, 'processing', 0);
+  await updateObjectStatus(jobId, objectId, 'processing', 0);
 
   try {
     const meshTask = await generateMesh({
@@ -515,7 +592,9 @@ async function generateObjectAsync(
       artStyle,
       mode: 'preview',
       onProgress: (task) => {
-        updateObjectStatus(jobId, objectId, 'processing', task.progress ?? 0);
+        // Best-effort progress heartbeat — fire-and-forget so a transient DB blip can't crash the
+        // synchronous Meshy progress callback.
+        void updateObjectStatus(jobId, objectId, 'processing', task.progress ?? 0).catch(() => {});
       },
     });
 
@@ -525,12 +604,12 @@ async function generateObjectAsync(
     console.log(`[PIPELINE] Persisting mesh for object ${objectId}`);
     const persistentMeshUrl = await persistMesh(tempMeshUrl, `${jobId}/${objectId}`, 'glb');
     console.log(`[PIPELINE] Object ${objectId} complete`);
-    updateObjectStatus(jobId, objectId, 'completed', 100, persistentMeshUrl);
+    await updateObjectStatus(jobId, objectId, 'completed', 100, persistentMeshUrl);
     return persistentMeshUrl;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Mesh generation failed';
     console.log(`[PIPELINE] Object ${objectId} failed: ${message}`);
-    updateObjectStatus(jobId, objectId, 'failed', undefined, undefined, message);
+    await updateObjectStatus(jobId, objectId, 'failed', undefined, undefined, message);
     return null;
   }
 }
@@ -571,11 +650,13 @@ export function buildSceneObjectsFromJob(
 /**
  * Get multi-object job status with computed progress
  */
-export function getMultiObjectJobStatus(jobId: string): (MultiObjectGenerationJob & { progress: number }) | undefined {
-  const job = getMultiObjectJob(jobId);
+export async function getMultiObjectJobStatus(
+  jobId: string
+): Promise<(MultiObjectGenerationJob & { progress: number }) | undefined> {
+  const job = await getMultiObjectJob(jobId);
   if (!job) return undefined;
   return {
     ...job,
-    progress: getMultiObjectJobProgress(jobId),
+    progress: await getMultiObjectJobProgress(jobId),
   };
 }

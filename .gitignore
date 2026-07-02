@@ -47,3 +47,6 @@ Thumbs.db
 # Browser test screenshots
 /public/test-screenshots/*
 !/public/test-screenshots/README.md
+
+# Windows shell artifact
+nul

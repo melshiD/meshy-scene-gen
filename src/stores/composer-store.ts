@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Vec3, LightingPreset, ScenePreset, SceneObject } from '@/types';
 import { createSceneObject } from '@/types';
-import { getDefaultPreset, getPreset } from '@/lib/presets';
+import { getDefaultPreset, getDefaultPresetById } from '@/lib/presets/defaults';
 
 // ============================================================================
 // Constants
@@ -410,7 +410,9 @@ export const useComposerStore = create<ComposerState & ComposerActions>(
 
     // Preset actions
     loadPreset: (presetId) => {
-      const preset = getPreset(presetId);
+      // Client-side sync lookup against built-ins (matches pre-Postgres behavior — the browser
+      // never resolved server-side custom presets here).
+      const preset = getDefaultPresetById(presetId);
       if (preset) {
         get().applyPreset(preset);
       }

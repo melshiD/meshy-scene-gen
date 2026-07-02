@@ -1,0 +1,89 @@
+// meshy-scene-gen — persistence schema. Postgres tenant on the shared Lodestar core-Postgres
+// (DATABASE_URL = postgresql://meshy_scene_gen:...@core-postgres:5432/meshy_scene_gen).
+//
+// Only durable metadata lives here: generation jobs + custom scene presets. Binary assets (meshes,
+// backgrounds, captures) and the scene manifest.json persist in Cloudflare R2 via the storage
+// abstraction (src/lib/storage) — not in Postgres. Enum/field names mirror src/types/index.ts so the
+// TS JobStatus strings map 1:1.
+//
+// Matches opinion-generator's proven setup: prisma-client-js generator, `prisma generate` runs inside
+// the Docker build so engine binaries auto-resolve for the container platform.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+/// Single-object generation job (was .next/cache/job-store/jobs.json — a GeneratedAsset).
+model Job {
+  id               String    @id // "job-{timestamp}-{random}"
+  status           JobStatus @default(pending)
+  prompt           String
+  objectPrompt     String?
+  backgroundPrompt String?
+  mood             String?
+  presetId         String?
+  assets           Json? // { full, web, thumb } capture URLs
+  meshUrl          String?
+  backgroundUrl    String?
+  manifestUrl      String?
+  error            String?
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
+
+  @@index([createdAt])
+}
+
+/// Multi-object generation job (was .next/cache/job-store/multi-jobs.json).
+model MultiObjectJob {
+  id          String              @id // "job-{timestamp}-{random}"
+  status      JobStatus           @default(pending)
+  // Background sub-status as columns (was a nested { status, url?, error? }) so partial updates are
+  // atomic single-query writes; the mapper reassembles the nested shape for the app.
+  backgroundStatus JobStatus      @default(pending)
+  backgroundUrl    String?
+  backgroundError  String?
+  createdAt   DateTime            @default(now())
+  completedAt DateTime?
+  objects     MultiObjectObject[]
+
+  @@index([createdAt])
+}
+
+/// One object within a multi-object job (ObjectGenerationStatus).
+model MultiObjectObject {
+  id       String         @id @default(cuid())
+  objectId String // "obj-{index}" — unique within a job
+  prompt   String
+  status   JobStatus      @default(pending)
+  progress Int?
+  meshUrl  String?
+  error    String?
+  jobId    String
+  job      MultiObjectJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, objectId])
+}
+
+/// Custom user-saved scene preset (was an in-memory Map — lost on restart). The 5 built-in presets
+/// stay code-level defaults in src/lib/presets; only custom presets persist here.
+model ScenePreset {
+  id          String   @id // "custom-{timestamp}-{random}"
+  name        String
+  description String
+  object      Json // { position, scale, rotation }
+  camera      Json // { position, fov, lookAt }
+  lighting    Json // { preset, intensity?, color? }
+  createdAt   DateTime @default(now())
+}

@@ -24,13 +24,13 @@ import {
 } from './job-store';
 
 describe('Job Store', () => {
-  beforeEach(() => {
-    clearJobs();
+  beforeEach(async () => {
+    await clearJobs();
   });
 
   describe('createJob', () => {
-    it('should create a job with pending status', () => {
-      const job = createJob({
+    it('should create a job with pending status', async () => {
+      const job = await createJob({
         prompt: 'crystal dragon',
       });
 
@@ -41,8 +41,8 @@ describe('Job Store', () => {
       expect(job.createdAt).toBeInstanceOf(Date);
     });
 
-    it('should store optional fields', () => {
-      const job = createJob({
+    it('should store optional fields', async () => {
+      const job = await createJob({
         prompt: 'dragon on mountain',
         objectPrompt: 'crystal dragon',
         backgroundPrompt: 'misty mountain',
@@ -54,48 +54,48 @@ describe('Job Store', () => {
       expect(job.presetId).toBe('hero');
     });
 
-    it('should generate unique IDs', () => {
-      const job1 = createJob({ prompt: 'test1' });
-      const job2 = createJob({ prompt: 'test2' });
+    it('should generate unique IDs', async () => {
+      const job1 = await createJob({ prompt: 'test1' });
+      const job2 = await createJob({ prompt: 'test2' });
 
       expect(job1.id).not.toBe(job2.id);
     });
   });
 
   describe('getJob', () => {
-    it('should retrieve a created job', () => {
-      const created = createJob({ prompt: 'test' });
-      const retrieved = getJob(created.id);
+    it('should retrieve a created job', async () => {
+      const created = await createJob({ prompt: 'test' });
+      const retrieved = await getJob(created.id);
 
       expect(retrieved).toEqual(created);
     });
 
-    it('should return undefined for non-existent job', () => {
-      const job = getJob('nonexistent');
+    it('should return undefined for non-existent job', async () => {
+      const job = await getJob('nonexistent');
       expect(job).toBeUndefined();
     });
   });
 
   describe('updateJobStatus', () => {
-    it('should update job status', () => {
-      const job = createJob({ prompt: 'test' });
-      updateJobStatus(job.id, 'processing');
+    it('should update job status', async () => {
+      const job = await createJob({ prompt: 'test' });
+      await updateJobStatus(job.id, 'processing');
 
-      const updated = getJob(job.id);
+      const updated = await getJob(job.id);
       expect(updated?.status).toBe('processing');
     });
 
-    it('should not throw for non-existent job', () => {
-      expect(() => updateJobStatus('nonexistent', 'processing')).not.toThrow();
+    it('should not throw for non-existent job', async () => {
+      await expect(updateJobStatus('nonexistent', 'processing')).resolves.not.toThrow();
     });
   });
 
   describe('completeJob', () => {
-    it('should complete job with assets', () => {
-      const job = createJob({ prompt: 'test' });
-      updateJobStatus(job.id, 'processing');
+    it('should complete job with assets', async () => {
+      const job = await createJob({ prompt: 'test' });
+      await updateJobStatus(job.id, 'processing');
 
-      completeJob(
+      await completeJob(
         job.id,
         {
           full: 'https://example.com/full.png',
@@ -105,7 +105,7 @@ describe('Job Store', () => {
         'https://example.com/mesh.glb'
       );
 
-      const completed = getJob(job.id);
+      const completed = await getJob(job.id);
       expect(completed?.status).toBe('completed');
       expect(completed?.assets?.full).toBe('https://example.com/full.png');
       expect(completed?.assets?.web).toBe('https://example.com/web.webp');
@@ -116,13 +116,13 @@ describe('Job Store', () => {
   });
 
   describe('failJob', () => {
-    it('should mark job as failed with error', () => {
-      const job = createJob({ prompt: 'test' });
-      updateJobStatus(job.id, 'processing');
+    it('should mark job as failed with error', async () => {
+      const job = await createJob({ prompt: 'test' });
+      await updateJobStatus(job.id, 'processing');
 
-      failJob(job.id, 'Something went wrong');
+      await failJob(job.id, 'Something went wrong');
 
-      const failed = getJob(job.id);
+      const failed = await getJob(job.id);
       expect(failed?.status).toBe('failed');
       expect(failed?.error).toBe('Something went wrong');
       expect(failed?.completedAt).toBeInstanceOf(Date);
@@ -131,14 +131,14 @@ describe('Job Store', () => {
 
   describe('listJobs', () => {
     it('should return jobs in reverse chronological order', async () => {
-      const job1 = createJob({ prompt: 'first' });
+      const job1 = await createJob({ prompt: 'first' });
       // Small delay to ensure different timestamps
       await new Promise((r) => setTimeout(r, 10));
-      const job2 = createJob({ prompt: 'second' });
+      const job2 = await createJob({ prompt: 'second' });
       await new Promise((r) => setTimeout(r, 10));
-      const job3 = createJob({ prompt: 'third' });
+      const job3 = await createJob({ prompt: 'third' });
 
-      const jobs = listJobs();
+      const jobs = await listJobs();
 
       expect(jobs.length).toBe(3);
       expect(jobs[0].id).toBe(job3.id);
@@ -146,42 +146,42 @@ describe('Job Store', () => {
       expect(jobs[2].id).toBe(job1.id);
     });
 
-    it('should respect limit parameter', () => {
-      createJob({ prompt: 'first' });
-      createJob({ prompt: 'second' });
-      createJob({ prompt: 'third' });
+    it('should respect limit parameter', async () => {
+      await createJob({ prompt: 'first' });
+      await createJob({ prompt: 'second' });
+      await createJob({ prompt: 'third' });
 
-      const jobs = listJobs(2);
+      const jobs = await listJobs(2);
       expect(jobs.length).toBe(2);
     });
   });
 
   describe('deleteJob', () => {
-    it('should delete a job', () => {
-      const job = createJob({ prompt: 'test' });
-      expect(getJob(job.id)).toBeDefined();
+    it('should delete a job', async () => {
+      const job = await createJob({ prompt: 'test' });
+      expect(await getJob(job.id)).toBeDefined();
 
-      const result = deleteJob(job.id);
+      const result = await deleteJob(job.id);
       expect(result).toBe(true);
-      expect(getJob(job.id)).toBeUndefined();
+      expect(await getJob(job.id)).toBeUndefined();
     });
 
-    it('should return false for non-existent job', () => {
-      const result = deleteJob('nonexistent');
+    it('should return false for non-existent job', async () => {
+      const result = await deleteJob('nonexistent');
       expect(result).toBe(false);
     });
   });
 
   describe('clearJobs', () => {
-    it('should clear all jobs', () => {
-      createJob({ prompt: 'first' });
-      createJob({ prompt: 'second' });
+    it('should clear all jobs', async () => {
+      await createJob({ prompt: 'first' });
+      await createJob({ prompt: 'second' });
 
-      expect(listJobs().length).toBe(2);
+      expect((await listJobs()).length).toBe(2);
 
-      clearJobs();
+      await clearJobs();
 
-      expect(listJobs().length).toBe(0);
+      expect((await listJobs()).length).toBe(0);
     });
   });
 });
@@ -191,13 +191,13 @@ describe('Job Store', () => {
 // ============================================================================
 
 describe('Multi-Object Job Store', () => {
-  beforeEach(() => {
-    clearMultiObjectJobs();
+  beforeEach(async () => {
+    await clearMultiObjectJobs();
   });
 
   describe('createMultiObjectJob', () => {
-    it('should create a multi-object job with pending status', () => {
-      const job = createMultiObjectJob({
+    it('should create a multi-object job with pending status', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'misty mountain landscape',
         objects: [
           { prompt: 'crystal dragon' },
@@ -218,12 +218,12 @@ describe('Multi-Object Job Store', () => {
       expect(job.createdAt).toBeInstanceOf(Date);
     });
 
-    it('should generate unique IDs', () => {
-      const job1 = createMultiObjectJob({
+    it('should generate unique IDs', async () => {
+      const job1 = await createMultiObjectJob({
         backgroundPrompt: 'bg1',
         objects: [{ prompt: 'obj1' }],
       });
-      const job2 = createMultiObjectJob({
+      const job2 = await createMultiObjectJob({
         backgroundPrompt: 'bg2',
         objects: [{ prompt: 'obj2' }],
       });
@@ -233,191 +233,191 @@ describe('Multi-Object Job Store', () => {
   });
 
   describe('getMultiObjectJob', () => {
-    it('should retrieve a created job', () => {
-      const created = createMultiObjectJob({
+    it('should retrieve a created job', async () => {
+      const created = await createMultiObjectJob({
         backgroundPrompt: 'test bg',
         objects: [{ prompt: 'test obj' }],
       });
-      const retrieved = getMultiObjectJob(created.id);
+      const retrieved = await getMultiObjectJob(created.id);
 
       expect(retrieved).toEqual(created);
     });
 
-    it('should return undefined for non-existent job', () => {
-      const job = getMultiObjectJob('nonexistent');
+    it('should return undefined for non-existent job', async () => {
+      const job = await getMultiObjectJob('nonexistent');
       expect(job).toBeUndefined();
     });
   });
 
   describe('updateMultiObjectJobStatus', () => {
-    it('should update job status', () => {
-      const job = createMultiObjectJob({
+    it('should update job status', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateMultiObjectJobStatus(job.id, 'processing');
+      await updateMultiObjectJobStatus(job.id, 'processing');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.status).toBe('processing');
     });
   });
 
   describe('updateBackgroundStatus', () => {
-    it('should update background status', () => {
-      const job = createMultiObjectJob({
+    it('should update background status', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'processing');
+      await updateBackgroundStatus(job.id, 'processing');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.background.status).toBe('processing');
     });
 
-    it('should update background with URL on completion', () => {
-      const job = createMultiObjectJob({
+    it('should update background with URL on completion', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.background.status).toBe('completed');
       expect(updated?.background.url).toBe('https://example.com/bg.png');
     });
 
-    it('should update background with error on failure', () => {
-      const job = createMultiObjectJob({
+    it('should update background with error on failure', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'failed', undefined, 'Generation failed');
+      await updateBackgroundStatus(job.id, 'failed', undefined, 'Generation failed');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.background.status).toBe('failed');
       expect(updated?.background.error).toBe('Generation failed');
     });
   });
 
   describe('updateObjectStatus', () => {
-    it('should update object status with progress', () => {
-      const job = createMultiObjectJob({
+    it('should update object status with progress', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj1' }, { prompt: 'obj2' }],
       });
-      updateObjectStatus(job.id, 'obj-0', 'processing', 50);
+      await updateObjectStatus(job.id, 'obj-0', 'processing', 50);
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.objects[0].status).toBe('processing');
       expect(updated?.objects[0].progress).toBe(50);
     });
 
-    it('should update object with mesh URL on completion', () => {
-      const job = createMultiObjectJob({
+    it('should update object with mesh URL on completion', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.objects[0].status).toBe('completed');
       expect(updated?.objects[0].meshUrl).toBe('https://example.com/mesh.glb');
     });
 
-    it('should update object with error on failure', () => {
-      const job = createMultiObjectJob({
+    it('should update object with error on failure', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateObjectStatus(job.id, 'obj-0', 'failed', undefined, undefined, 'Mesh failed');
+      await updateObjectStatus(job.id, 'obj-0', 'failed', undefined, undefined, 'Mesh failed');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.objects[0].status).toBe('failed');
       expect(updated?.objects[0].error).toBe('Mesh failed');
     });
   });
 
   describe('isMultiObjectJobComplete', () => {
-    it('should return false when job is pending', () => {
-      const job = createMultiObjectJob({
+    it('should return false when job is pending', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
 
-      expect(isMultiObjectJobComplete(job.id)).toBe(false);
+      expect(await isMultiObjectJobComplete(job.id)).toBe(false);
     });
 
-    it('should return true when all components are completed', () => {
-      const job = createMultiObjectJob({
+    it('should return true when all components are completed', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj1' }, { prompt: 'obj2' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh1.glb');
-      updateObjectStatus(job.id, 'obj-1', 'completed', 100, 'https://example.com/mesh2.glb');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh1.glb');
+      await updateObjectStatus(job.id, 'obj-1', 'completed', 100, 'https://example.com/mesh2.glb');
 
-      expect(isMultiObjectJobComplete(job.id)).toBe(true);
+      expect(await isMultiObjectJobComplete(job.id)).toBe(true);
     });
 
-    it('should return true when some components failed', () => {
-      const job = createMultiObjectJob({
+    it('should return true when some components failed', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'failed', undefined, undefined, 'Error');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'failed', undefined, undefined, 'Error');
 
-      expect(isMultiObjectJobComplete(job.id)).toBe(true);
+      expect(await isMultiObjectJobComplete(job.id)).toBe(true);
     });
 
-    it('should return false for non-existent job', () => {
-      expect(isMultiObjectJobComplete('nonexistent')).toBe(false);
+    it('should return false for non-existent job', async () => {
+      expect(await isMultiObjectJobComplete('nonexistent')).toBe(false);
     });
   });
 
   describe('completeMultiObjectJob', () => {
-    it('should set status to completed when all succeed', () => {
-      const job = createMultiObjectJob({
+    it('should set status to completed when all succeed', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
 
-      completeMultiObjectJob(job.id);
+      await completeMultiObjectJob(job.id);
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.status).toBe('completed');
       expect(updated?.completedAt).toBeInstanceOf(Date);
     });
 
-    it('should set status to failed when any component fails', () => {
-      const job = createMultiObjectJob({
+    it('should set status to failed when any component fails', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj1' }, { prompt: 'obj2' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
-      updateObjectStatus(job.id, 'obj-1', 'failed', undefined, undefined, 'Error');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateObjectStatus(job.id, 'obj-1', 'failed', undefined, undefined, 'Error');
 
-      completeMultiObjectJob(job.id);
+      await completeMultiObjectJob(job.id);
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.status).toBe('failed');
     });
   });
 
   describe('failMultiObjectJob', () => {
-    it('should mark job as failed and fail pending items', () => {
-      const job = createMultiObjectJob({
+    it('should mark job as failed and fail pending items', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj1' }, { prompt: 'obj2' }],
       });
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
 
-      failMultiObjectJob(job.id, 'Critical error');
+      await failMultiObjectJob(job.id, 'Critical error');
 
-      const updated = getMultiObjectJob(job.id);
+      const updated = await getMultiObjectJob(job.id);
       expect(updated?.status).toBe('failed');
       expect(updated?.background.status).toBe('failed');
       expect(updated?.background.error).toBe('Critical error');
@@ -430,58 +430,58 @@ describe('Multi-Object Job Store', () => {
   });
 
   describe('getMultiObjectJobProgress', () => {
-    it('should return 0 for pending job', () => {
-      const job = createMultiObjectJob({
+    it('should return 0 for pending job', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
 
-      expect(getMultiObjectJobProgress(job.id)).toBe(0);
+      expect(await getMultiObjectJobProgress(job.id)).toBe(0);
     });
 
-    it('should return 100 when fully completed', () => {
-      const job = createMultiObjectJob({
+    it('should return 100 when fully completed', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
 
-      expect(getMultiObjectJobProgress(job.id)).toBe(100);
+      expect(await getMultiObjectJobProgress(job.id)).toBe(100);
     });
 
-    it('should return partial progress', () => {
-      const job = createMultiObjectJob({
+    it('should return partial progress', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj1' }, { prompt: 'obj2' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/mesh.glb');
       // obj-1 still pending
 
       // Background = 20%, each object = 40%
       // Progress = 20 + 40 + 0 = 60
-      expect(getMultiObjectJobProgress(job.id)).toBe(60);
+      expect(await getMultiObjectJobProgress(job.id)).toBe(60);
     });
 
-    it('should return 0 for non-existent job', () => {
-      expect(getMultiObjectJobProgress('nonexistent')).toBe(0);
+    it('should return 0 for non-existent job', async () => {
+      expect(await getMultiObjectJobProgress('nonexistent')).toBe(0);
     });
   });
 
   describe('listMultiObjectJobs', () => {
     it('should return jobs in reverse chronological order', async () => {
-      const job1 = createMultiObjectJob({
+      const job1 = await createMultiObjectJob({
         backgroundPrompt: 'first',
         objects: [{ prompt: 'obj' }],
       });
       await new Promise((r) => setTimeout(r, 10));
-      const job2 = createMultiObjectJob({
+      const job2 = await createMultiObjectJob({
         backgroundPrompt: 'second',
         objects: [{ prompt: 'obj' }],
       });
 
-      const jobs = listMultiObjectJobs();
+      const jobs = await listMultiObjectJobs();
 
       expect(jobs.length).toBe(2);
       expect(jobs[0].id).toBe(job2.id);
@@ -490,32 +490,32 @@ describe('Multi-Object Job Store', () => {
   });
 
   describe('deleteMultiObjectJob', () => {
-    it('should delete a job', () => {
-      const job = createMultiObjectJob({
+    it('should delete a job', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'test',
         objects: [{ prompt: 'obj' }],
       });
 
-      const result = deleteMultiObjectJob(job.id);
+      const result = await deleteMultiObjectJob(job.id);
       expect(result).toBe(true);
-      expect(getMultiObjectJob(job.id)).toBeUndefined();
+      expect(await getMultiObjectJob(job.id)).toBeUndefined();
     });
 
-    it('should return false for non-existent job', () => {
-      expect(deleteMultiObjectJob('nonexistent')).toBe(false);
+    it('should return false for non-existent job', async () => {
+      expect(await deleteMultiObjectJob('nonexistent')).toBe(false);
     });
   });
 
   describe('clearMultiObjectJobs', () => {
-    it('should clear all multi-object jobs', () => {
-      createMultiObjectJob({ backgroundPrompt: 'bg1', objects: [{ prompt: 'obj1' }] });
-      createMultiObjectJob({ backgroundPrompt: 'bg2', objects: [{ prompt: 'obj2' }] });
+    it('should clear all multi-object jobs', async () => {
+      await createMultiObjectJob({ backgroundPrompt: 'bg1', objects: [{ prompt: 'obj1' }] });
+      await createMultiObjectJob({ backgroundPrompt: 'bg2', objects: [{ prompt: 'obj2' }] });
 
-      expect(listMultiObjectJobs().length).toBe(2);
+      expect((await listMultiObjectJobs()).length).toBe(2);
 
-      clearMultiObjectJobs();
+      await clearMultiObjectJobs();
 
-      expect(listMultiObjectJobs().length).toBe(0);
+      expect((await listMultiObjectJobs()).length).toBe(0);
     });
   });
 });

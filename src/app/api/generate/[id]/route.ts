@@ -34,7 +34,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     console.log(`[API] GET /api/generate/${id} - Status check`);
 
     // Try multi-object job first
-    const multiJob = getMultiObjectJobStatus(id);
+    const multiJob = await getMultiObjectJobStatus(id);
     if (multiJob) {
       console.log(`[API] Job ${id}: type=multi, status=${multiJob.status}, progress=${multiJob.progress}%`);
       return NextResponse.json({
@@ -50,7 +50,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     }
 
     // Try single-object job
-    const singleJob = getJobStatus(id);
+    const singleJob = await getJobStatus(id);
     if (singleJob) {
       console.log(`[API] Job ${id}: type=single, status=${singleJob.status}`);
       return NextResponse.json({

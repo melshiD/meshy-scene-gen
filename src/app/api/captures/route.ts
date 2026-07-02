@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getJob, addCapturesAndComplete } from '@/lib/pipeline';
-import { uploadCaptures } from '@/lib/storage';
+import { uploadCaptures, generateCaptureKey } from '@/lib/storage';
+import { getManifestBuilder, deleteManifestBuilder, updateJobManifestUrl } from '@/lib/pipeline/job-store';
+import { saveManifest } from '@/lib/manifest';
+import type { CapturesUploadRequest } from '@/types';
 
 /**
  * POST /api/captures
@@ -43,7 +46,7 @@ export async function POST(request: Request) {
     }
 
     // Find the job
-    const job = getJob(body.jobId);
+    const job = await getJob(body.jobId);
     if (!job) {
       return NextResponse.json({ error: `Job ${body.jobId} not found` }, { status: 404 });
     }
@@ -84,13 +87,70 @@ export async function POST(request: Request) {
     );
 
     // Complete the job with capture URLs
-    addCapturesAndComplete(body.jobId, captureUrls);
+    await addCapturesAndComplete(body.jobId, captureUrls);
 
     console.log(`[API] Job ${body.jobId} completed with captures`);
+
+    // Finalize and save manifest
+    let manifestUrl: string | undefined;
+    const builder = getManifestBuilder(body.jobId);
+
+    if (builder) {
+      try {
+        // Set captures in manifest
+        builder.setCaptures({
+          full: {
+            url: captureUrls.full,
+            key: generateCaptureKey(body.jobId, 'full', 2048, 2048, 'png'),
+            contentType: 'image/png',
+            persistedAt: new Date().toISOString(),
+          },
+          web: {
+            url: captureUrls.web,
+            key: generateCaptureKey(body.jobId, 'web', 800, 800, 'webp'),
+            contentType: 'image/webp',
+            persistedAt: new Date().toISOString(),
+          },
+          thumb: {
+            url: captureUrls.thumb,
+            key: generateCaptureKey(body.jobId, 'thumb', 400, 400, 'webp'),
+            contentType: 'image/webp',
+            persistedAt: new Date().toISOString(),
+          },
+        });
+
+        // Set scene config from client if provided
+        if (body.sceneConfig) {
+          builder.setSceneConfig(body.sceneConfig);
+        }
+
+        // Set metadata if provided
+        if (body.metadata) {
+          builder.setMetadata(body.metadata);
+        }
+
+        builder.markCaptured();
+
+        const manifest = builder.build();
+        manifestUrl = await saveManifest(manifest);
+
+        // Update job with manifest URL
+        await updateJobManifestUrl(body.jobId, manifestUrl);
+
+        console.log(`[API] Manifest saved: ${manifestUrl}`);
+
+        // Clean up builder
+        deleteManifestBuilder(body.jobId);
+      } catch (err) {
+        console.error('[API] Failed to build/save manifest:', err);
+        // Continue without manifest - captures still succeeded
+      }
+    }
 
     return NextResponse.json({
       success: true,
       assets: captureUrls,
+      manifestUrl,
     });
   } catch (error) {
     console.error('[API] Captures API error:', error);

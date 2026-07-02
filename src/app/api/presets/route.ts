@@ -12,7 +12,7 @@ import { listPresets, savePreset } from '@/lib/presets';
  */
 export async function GET() {
   try {
-    const presets = listPresets();
+    const presets = await listPresets();
     return NextResponse.json(presets);
   } catch (error) {
     console.error('List presets error:', error);
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     }
 
     // Save the preset
-    const preset = savePreset(body);
+    const preset = await savePreset(body);
 
     return NextResponse.json(preset, { status: 201 });
   } catch (error) {

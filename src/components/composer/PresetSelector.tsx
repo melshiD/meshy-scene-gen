@@ -4,7 +4,7 @@ import { useState } from 'react';
 import * as Select from '@radix-ui/react-select';
 import * as Label from '@radix-ui/react-label';
 import { useComposerStore } from '@/stores/composer-store';
-import { listPresets } from '@/lib/presets';
+import { DEFAULT_PRESETS } from '@/lib/presets/defaults';
 
 // ============================================================================
 // Types
@@ -23,7 +23,9 @@ export function PresetSelector({
   className = '',
   onSavePreset,
 }: PresetSelectorProps) {
-  const presets = listPresets();
+  // Built-in presets only — same as before the Postgres port (the browser never saw the server's
+  // custom-preset store). Surfacing DB-saved customs here = fetch GET /api/presets (future work).
+  const presets = DEFAULT_PRESETS;
   const currentPresetId = useComposerStore((state) => state.currentPresetId);
   const isDirty = useComposerStore((state) => state.isDirty);
   const loadPreset = useComposerStore((state) => state.loadPreset);

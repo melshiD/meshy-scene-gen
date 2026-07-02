@@ -33,11 +33,11 @@ vi.mock('@/lib/scene', () => ({
 import { decomposePrompt } from '@/lib/image-gen';
 
 describe('Generate Asset Module', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    clearJobs();
-    clearMultiObjectJobs();
-    clearCustomPresets();
+    await clearJobs();
+    await clearMultiObjectJobs();
+    await clearCustomPresets();
   });
 
   afterEach(() => {
@@ -97,8 +97,8 @@ describe('Generate Asset Module', () => {
   });
 
   describe('validateRequest', () => {
-    it('should accept valid single prompt request', () => {
-      const result = validateRequest({
+    it('should accept valid single prompt request', async () => {
+      const result = await validateRequest({
         prompt: 'crystal dragon on mountain',
       });
 
@@ -106,8 +106,8 @@ describe('Generate Asset Module', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('should accept valid split prompt request', () => {
-      const result = validateRequest({
+    it('should accept valid split prompt request', async () => {
+      const result = await validateRequest({
         objectPrompt: 'crystal dragon',
         backgroundPrompt: 'misty mountain',
       });
@@ -115,31 +115,31 @@ describe('Generate Asset Module', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('should reject request with no prompts', () => {
-      const result = validateRequest({});
+    it('should reject request with no prompts', async () => {
+      const result = await validateRequest({});
 
       expect(result.valid).toBe(false);
       expect(result.error).toContain('Must provide either');
     });
 
-    it('should reject request with only objectPrompt', () => {
-      const result = validateRequest({
+    it('should reject request with only objectPrompt', async () => {
+      const result = await validateRequest({
         objectPrompt: 'dragon',
       });
 
       expect(result.valid).toBe(false);
     });
 
-    it('should reject request with only backgroundPrompt', () => {
-      const result = validateRequest({
+    it('should reject request with only backgroundPrompt', async () => {
+      const result = await validateRequest({
         backgroundPrompt: 'mountain',
       });
 
       expect(result.valid).toBe(false);
     });
 
-    it('should accept request with preset', () => {
-      const result = validateRequest({
+    it('should accept request with preset', async () => {
+      const result = await validateRequest({
         prompt: 'dragon',
         preset: 'hero',
       });
@@ -147,8 +147,8 @@ describe('Generate Asset Module', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('should reject request with non-existent preset', () => {
-      const result = validateRequest({
+    it('should reject request with non-existent preset', async () => {
+      const result = await validateRequest({
         prompt: 'dragon',
         preset: 'nonexistent',
       });
@@ -159,8 +159,8 @@ describe('Generate Asset Module', () => {
   });
 
   describe('getJobStatus', () => {
-    it('should return undefined for non-existent job', () => {
-      const result = getJobStatus('nonexistent');
+    it('should return undefined for non-existent job', async () => {
+      const result = await getJobStatus('nonexistent');
       expect(result).toBeUndefined();
     });
   });
@@ -171,11 +171,11 @@ describe('Generate Asset Module', () => {
 // ============================================================================
 
 describe('Multi-Object Generation', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    clearJobs();
-    clearMultiObjectJobs();
-    clearCustomPresets();
+    await clearJobs();
+    await clearMultiObjectJobs();
+    await clearCustomPresets();
   });
 
   afterEach(() => {
@@ -208,8 +208,8 @@ describe('Multi-Object Generation', () => {
   });
 
   describe('validateMultiObjectRequest', () => {
-    it('should accept valid multi-object request', () => {
-      const result = validateMultiObjectRequest({
+    it('should accept valid multi-object request', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'misty mountain',
         objects: [
           { prompt: 'crystal dragon' },
@@ -221,8 +221,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toBeUndefined();
     });
 
-    it('should reject request without backgroundPrompt', () => {
-      const result = validateMultiObjectRequest({
+    it('should reject request without backgroundPrompt', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: '',
         objects: [{ prompt: 'dragon' }],
       });
@@ -231,8 +231,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toContain('backgroundPrompt is required');
     });
 
-    it('should reject request without objects', () => {
-      const result = validateMultiObjectRequest({
+    it('should reject request without objects', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'mountain',
         objects: [],
       });
@@ -241,8 +241,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toContain('At least one object is required');
     });
 
-    it('should reject request with too many objects', () => {
-      const result = validateMultiObjectRequest({
+    it('should reject request with too many objects', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'mountain',
         objects: Array(11).fill({ prompt: 'object' }),
         maxObjects: 10,
@@ -252,8 +252,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toContain('Too many objects');
     });
 
-    it('should reject request with empty object prompt', () => {
-      const result = validateMultiObjectRequest({
+    it('should reject request with empty object prompt', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'mountain',
         objects: [{ prompt: 'dragon' }, { prompt: '' }],
       });
@@ -262,8 +262,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toContain('Object at index 1 has empty prompt');
     });
 
-    it('should reject request with non-existent scene preset', () => {
-      const result = validateMultiObjectRequest({
+    it('should reject request with non-existent scene preset', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'mountain',
         objects: [{ prompt: 'dragon' }],
         scenePreset: 'nonexistent',
@@ -273,8 +273,8 @@ describe('Multi-Object Generation', () => {
       expect(result.error).toContain('Scene preset "nonexistent" not found');
     });
 
-    it('should accept request with valid scene preset', () => {
-      const result = validateMultiObjectRequest({
+    it('should accept request with valid scene preset', async () => {
+      const result = await validateMultiObjectRequest({
         backgroundPrompt: 'mountain',
         objects: [{ prompt: 'dragon' }],
         scenePreset: 'hero',
@@ -285,18 +285,18 @@ describe('Multi-Object Generation', () => {
   });
 
   describe('buildSceneObjectsFromJob', () => {
-    it('should build scene objects with positions from layout', () => {
-      const job = createMultiObjectJob({
+    it('should build scene objects with positions from layout', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'mountain',
         objects: [
           { prompt: 'dragon' },
           { prompt: 'trophy' },
         ],
       });
-      updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/dragon.glb');
-      updateObjectStatus(job.id, 'obj-1', 'completed', 100, 'https://example.com/trophy.glb');
+      await updateObjectStatus(job.id, 'obj-0', 'completed', 100, 'https://example.com/dragon.glb');
+      await updateObjectStatus(job.id, 'obj-1', 'completed', 100, 'https://example.com/trophy.glb');
 
-      const updatedJob = createMultiObjectJob({
+      const updatedJob = await createMultiObjectJob({
         backgroundPrompt: 'mountain',
         objects: [
           { prompt: 'dragon' },
@@ -317,8 +317,8 @@ describe('Multi-Object Generation', () => {
       expect(sceneObjects[0].position.x).not.toBe(sceneObjects[1].position.x);
     });
 
-    it('should use centered layout by default', () => {
-      const job = createMultiObjectJob({
+    it('should use centered layout by default', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'mountain',
         objects: [{ prompt: 'single' }],
       });
@@ -331,22 +331,22 @@ describe('Multi-Object Generation', () => {
   });
 
   describe('getMultiObjectJobStatus', () => {
-    it('should return job with progress', () => {
-      const job = createMultiObjectJob({
+    it('should return job with progress', async () => {
+      const job = await createMultiObjectJob({
         backgroundPrompt: 'mountain',
         objects: [{ prompt: 'dragon' }],
       });
-      updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
+      await updateBackgroundStatus(job.id, 'completed', 'https://example.com/bg.png');
 
-      const result = getMultiObjectJobStatus(job.id);
+      const result = await getMultiObjectJobStatus(job.id);
 
       expect(result).toBeDefined();
       expect(result?.id).toBe(job.id);
       expect(result?.progress).toBeGreaterThan(0);
     });
 
-    it('should return undefined for non-existent job', () => {
-      const result = getMultiObjectJobStatus('nonexistent');
+    it('should return undefined for non-existent job', async () => {
+      const result = await getMultiObjectJobStatus('nonexistent');
       expect(result).toBeUndefined();
     });
   });
