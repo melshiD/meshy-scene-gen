@@ -119,7 +119,8 @@ export class BackgroundClient {
         size: options.size ?? '1024x1024',
         quality: options.quality ?? 'hd',
         style: options.style ?? 'natural',
-        response_format: 'url',
+        // NOTE: response_format was removed from the OpenAI images API (2026) — sending it now 400s.
+        // dall-e-3 returns a URL by default, which is what the handling below expects.
       });
 
       const image = response.data?.[0];

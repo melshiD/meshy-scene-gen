@@ -169,7 +169,8 @@ export async function generateBackground(
       size: config.size ?? DEFAULT_CONFIG.size,
       quality: config.quality ?? DEFAULT_CONFIG.quality,
       style: config.style ?? DEFAULT_CONFIG.style,
-      response_format: 'url',
+      // NOTE: response_format was removed from the OpenAI images API (2026) — sending it now 400s.
+      // dall-e-3 returns a URL by default, which is what the handling below expects.
     });
 
     if (!response.data || response.data.length === 0) {

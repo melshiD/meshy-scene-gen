@@ -93,7 +93,6 @@ describe('BackgroundClient', () => {
         size: '1024x1024',
         quality: 'hd',
         style: 'natural',
-        response_format: 'url',
       });
     });
 
