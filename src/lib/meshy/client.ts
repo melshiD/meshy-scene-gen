@@ -58,9 +58,10 @@ const DEFAULT_RETRY_OPTIONS: RetryOptions = {
   maxDelayMs: 30000,
   shouldRetry: (error: unknown): boolean => {
     if (error instanceof MeshyError) {
-      // Retry on network errors and 5xx status codes
+      // Retry on network errors, rate limits, and 5xx status codes
       return (
         error.code === 'NETWORK_ERROR' ||
+        error.statusCode === 429 ||
         (error.statusCode !== undefined && error.statusCode >= 500)
       );
     }
@@ -103,6 +104,52 @@ async function withRetry<T>(
     undefined,
     undefined
   );
+}
+
+// ============================================================================
+// Task-Level Retry (server-side transient failures)
+// ============================================================================
+// The HTTP retry above never sees these: Meshy can accept a task and then fail it
+// server-side (status FAILED) with a "please retry" style task_error — observed live
+// 2026-07-02 as "The generation service is temporarily unavailable. Please retry.".
+// Failed tasks aren't billed, so recreating one is credit-safe; a fresh task only
+// bills if it succeeds. TIMEOUT is deliberately NOT retried: the original task may
+// still complete (and bill) server-side, so recreating it risks double spend.
+
+const TRANSIENT_TASK_ERROR =
+  /temporarily unavailable|please retry|try again|internal (server )?error/i;
+
+/** Waits between task recreations; length = extra attempts after the first. */
+const TASK_RETRY_DELAYS_MS = [30_000, 60_000];
+
+function isTransientTaskFailure(error: unknown): boolean {
+  return (
+    error instanceof MeshyError &&
+    error.code === 'TASK_FAILED' &&
+    TRANSIENT_TASK_ERROR.test(error.message)
+  );
+}
+
+/**
+ * Run one create-task+wait stage, recreating the task when Meshy fails it
+ * server-side with a transient error.
+ */
+async function withTaskRetry<T>(stage: string, run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      if (attempt >= TASK_RETRY_DELAYS_MS.length || !isTransientTaskFailure(error)) {
+        throw error;
+      }
+      const delayMs = TASK_RETRY_DELAYS_MS[attempt];
+      console.log(
+        `[MESHY] ${stage}: transient server-side task failure (${(error as Error).message}) — ` +
+          `recreating task in ${delayMs / 1000}s (retry ${attempt + 1}/${TASK_RETRY_DELAYS_MS.length})`
+      );
+      await sleep(delayMs);
+    }
+  }
 }
 
 // ============================================================================
@@ -385,12 +432,14 @@ export async function generateMesh(
 ): Promise<MeshyTask> {
   const { pollIntervalMs, maxWaitTimeMs, onProgress, ...createOptions } = options;
 
-  const task = await createMeshTask(createOptions);
+  return withTaskRetry('generate', async () => {
+    const task = await createMeshTask(createOptions);
 
-  return waitForMesh(task.id, {
-    pollIntervalMs,
-    maxWaitTimeMs,
-    onProgress,
+    return waitForMesh(task.id, {
+      pollIntervalMs,
+      maxWaitTimeMs,
+      onProgress,
+    });
   });
 }
 
@@ -437,41 +486,47 @@ export async function generateTexturedMesh(
 
   console.log(`[MESHY] Starting textured mesh generation: "${prompt}"`);
 
-  // Stage 1: Preview (geometry generation)
+  // Stage 1: Preview (geometry generation). Retried as its own stage so a transient
+  // server-side failure here never touches (or re-bills) a later refine.
   console.log('[MESHY] Stage 1: Creating preview task...');
-  const previewTask = await createMeshTask({
-    prompt,
-    artStyle,
-    negativePrompt,
-    mode: 'preview',
-  });
+  const completedPreview = await withTaskRetry('preview', async () => {
+    const previewTask = await createMeshTask({
+      prompt,
+      artStyle,
+      negativePrompt,
+      mode: 'preview',
+    });
 
-  const completedPreview = await waitForMesh(previewTask.id, {
-    pollIntervalMs,
-    maxWaitTimeMs,
-    onProgress: (task) => {
-      onProgress?.(task, 'preview');
-    },
+    return waitForMesh(previewTask.id, {
+      pollIntervalMs,
+      maxWaitTimeMs,
+      onProgress: (task) => {
+        onProgress?.(task, 'preview');
+      },
+    });
   });
 
   console.log(`[MESHY] Stage 1 complete: Preview task ${completedPreview.id}`);
 
-  // Stage 2: Refine (texture generation)
+  // Stage 2: Refine (texture generation). Retried independently: a transient refine
+  // failure recreates only the refine task — the completed (paid) preview is reused.
   console.log('[MESHY] Stage 2: Creating refine task...');
-  const refineTask = await createMeshTask({
-    prompt, // Not used for refine, but kept for type consistency
-    mode: 'refine',
-    previewTaskId: completedPreview.id,
-    enablePbr,
-    texturePrompt: texturePrompt ?? prompt, // Use original prompt if no texture prompt
-  });
+  const completedRefine = await withTaskRetry('refine', async () => {
+    const refineTask = await createMeshTask({
+      prompt, // Not used for refine, but kept for type consistency
+      mode: 'refine',
+      previewTaskId: completedPreview.id,
+      enablePbr,
+      texturePrompt: texturePrompt ?? prompt, // Use original prompt if no texture prompt
+    });
 
-  const completedRefine = await waitForMesh(refineTask.id, {
-    pollIntervalMs,
-    maxWaitTimeMs,
-    onProgress: (task) => {
-      onProgress?.(task, 'refine');
-    },
+    return waitForMesh(refineTask.id, {
+      pollIntervalMs,
+      maxWaitTimeMs,
+      onProgress: (task) => {
+        onProgress?.(task, 'refine');
+      },
+    });
   });
 
   console.log(`[MESHY] Stage 2 complete: Refine task ${completedRefine.id}`);

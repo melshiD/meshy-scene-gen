@@ -327,4 +327,119 @@ describe('Meshy API Client', () => {
       expect(error.name).toBe('MeshyError');
     });
   });
+
+  describe('retry heuristics', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const ok = (body: unknown) => ({
+      ok: true,
+      json: () => Promise.resolve(body),
+    });
+    const httpError = (status: number, statusText: string, message: string) => ({
+      ok: false,
+      status,
+      statusText,
+      text: () => Promise.resolve(JSON.stringify({ message })),
+    });
+    const pending = (id: string): MeshyTask => ({
+      id,
+      status: 'PENDING',
+      progress: 0,
+      created_at: 0,
+    });
+    const succeeded = (id: string): MeshyTask => ({
+      id,
+      status: 'SUCCEEDED',
+      progress: 100,
+      model_urls: { glb: 'url', fbx: 'url', usdz: 'url', obj: 'url' },
+      created_at: 0,
+      finished_at: 0,
+    });
+    const failed = (id: string, message: string): MeshyTask => ({
+      id,
+      status: 'FAILED',
+      progress: 0,
+      task_error: { message },
+      created_at: 0,
+    });
+
+    it('should retry HTTP 429 (rate limit)', async () => {
+      vi.useFakeTimers();
+
+      mockFetch.mockResolvedValueOnce(httpError(429, 'Too Many Requests', 'rate limited'));
+      mockFetch.mockResolvedValueOnce(ok(succeeded('task-123')));
+
+      const promise = getMeshTaskStatus('task-123');
+      const assertion = expect(promise).resolves.toMatchObject({ status: 'SUCCEEDED' });
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('should recreate the task when Meshy fails it server-side with a transient error', async () => {
+      vi.useFakeTimers();
+
+      // Attempt 1: create → status → poll returns FAILED("temporarily unavailable")
+      mockFetch.mockResolvedValueOnce(ok({ result: 'task-1' }));
+      mockFetch.mockResolvedValueOnce(ok(pending('task-1')));
+      mockFetch.mockResolvedValueOnce(
+        ok(failed('task-1', 'The generation service is temporarily unavailable. Please retry.'))
+      );
+      // Attempt 2 (recreated task): create → status → poll returns SUCCEEDED
+      mockFetch.mockResolvedValueOnce(ok({ result: 'task-2' }));
+      mockFetch.mockResolvedValueOnce(ok(pending('task-2')));
+      mockFetch.mockResolvedValueOnce(ok(succeeded('task-2')));
+
+      const promise = generateMesh({ prompt: 'a bronze compass' });
+      const assertion = expect(promise).resolves.toMatchObject({
+        id: 'task-2',
+        status: 'SUCCEEDED',
+      });
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      const postCalls = mockFetch.mock.calls.filter(([, o]) => o?.method === 'POST');
+      expect(postCalls).toHaveLength(2);
+    });
+
+    it('should NOT recreate the task on a non-transient server-side failure', async () => {
+      vi.useFakeTimers();
+
+      mockFetch.mockResolvedValueOnce(ok({ result: 'task-1' }));
+      mockFetch.mockResolvedValueOnce(ok(pending('task-1')));
+      mockFetch.mockResolvedValueOnce(ok(failed('task-1', 'Prompt rejected by content policy')));
+
+      const promise = generateMesh({ prompt: 'something disallowed' });
+      const assertion = expect(promise).rejects.toThrow('Prompt rejected by content policy');
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      const postCalls = mockFetch.mock.calls.filter(([, o]) => o?.method === 'POST');
+      expect(postCalls).toHaveLength(1);
+    });
+
+    it('should give up after exhausting task recreations', async () => {
+      vi.useFakeTimers();
+
+      // 1 original + 2 recreations, all failing transiently
+      for (let i = 1; i <= 3; i++) {
+        mockFetch.mockResolvedValueOnce(ok({ result: `task-${i}` }));
+        mockFetch.mockResolvedValueOnce(ok(pending(`task-${i}`)));
+        mockFetch.mockResolvedValueOnce(
+          ok(failed(`task-${i}`, 'The generation service is temporarily unavailable. Please retry.'))
+        );
+      }
+
+      const promise = generateMesh({ prompt: 'a bronze compass' });
+      const assertion = expect(promise).rejects.toThrow('temporarily unavailable');
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      const postCalls = mockFetch.mock.calls.filter(([, o]) => o?.method === 'POST');
+      expect(postCalls).toHaveLength(3);
+    });
+  });
 });

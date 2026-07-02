@@ -38,6 +38,9 @@ import {
 } from './job-store';
 import { calculateLayout, getLayoutDefaults } from './layout';
 
+/** Pause before the salvage retry of a failed generation leg (see generateAssets). */
+const SALVAGE_RETRY_DELAY_MS = 10_000;
+
 /**
  * Result of asset generation (server-side)
  *
@@ -128,42 +131,72 @@ export async function generateAssets(
   console.log('[PIPELINE] Stage start: parallel asset generation (mesh + background)');
   console.log(`[PIPELINE] Textured mesh: ${textured ? 'yes (preview → refine)' : 'no (preview only)'}`);
 
-  // Run Meshy and DALL-E in parallel
-  // For textured meshes, we use preview → refine workflow
-  const meshPromise = textured
-    ? generateTexturedMesh({
-        prompt: objectPrompt,
-        artStyle: meshArtStyle,
-        texturePrompt: texturePrompt ?? objectPrompt,
-        enablePbr: true,
-        onProgress: (task: MeshyTask, stage: 'preview' | 'refine') => {
-          // Map preview (0-100) to 0-50, refine (0-100) to 50-100
-          const baseProgress = stage === 'preview' ? 0 : 50;
-          const stageProgress = (task.progress ?? 0) / 2;
-          onProgress?.('mesh', baseProgress + stageProgress);
-        },
-      })
-    : generateMesh({
-        prompt: objectPrompt,
-        artStyle: meshArtStyle,
-        mode: 'preview',
-        onProgress: (task) => {
-          onProgress?.('mesh', task.progress ?? 0);
-        },
-      });
+  // Run Meshy and the image model in parallel. Each leg is a re-runnable thunk so a
+  // failed leg can be retried on its own — the surviving leg's (already paid-for)
+  // result is kept, never regenerated.
+  const runMesh = () =>
+    textured
+      ? generateTexturedMesh({
+          prompt: objectPrompt,
+          artStyle: meshArtStyle,
+          texturePrompt: texturePrompt ?? objectPrompt,
+          enablePbr: true,
+          onProgress: (task: MeshyTask, stage: 'preview' | 'refine') => {
+            // Map preview (0-100) to 0-50, refine (0-100) to 50-100
+            const baseProgress = stage === 'preview' ? 0 : 50;
+            const stageProgress = (task.progress ?? 0) / 2;
+            onProgress?.('mesh', baseProgress + stageProgress);
+          },
+        })
+      : generateMesh({
+          prompt: objectPrompt,
+          artStyle: meshArtStyle,
+          mode: 'preview',
+          onProgress: (task) => {
+            onProgress?.('mesh', task.progress ?? 0);
+          },
+        });
 
-  const [meshTask, bgResult] = await Promise.all([
-    meshPromise,
-    generateBackgroundWithMood(backgroundPrompt, mood).then((result) => {
-      onProgress?.('background', 100);
-      return result;
-    }),
-  ]);
+  const runBackground = async () => {
+    const result = await generateBackgroundWithMood(backgroundPrompt, mood);
+    if (!result.success) {
+      throw new Error(`Background generation failed: ${result.error}`);
+    }
+    onProgress?.('background', 100);
+    return result;
+  };
 
-  if (!bgResult.success) {
-    console.log(`[PIPELINE] Stage failed: background generation - ${bgResult.error}`);
-    throw new Error(`Background generation failed: ${bgResult.error}`);
+  let [meshSettled, bgSettled] = await Promise.allSettled([runMesh(), runBackground()]);
+
+  // Salvage: if exactly one leg failed, retry just that leg once. Both legs carry
+  // their own transient-retry logic internally, so a failure surviving to here means
+  // the upstream was down for a while — pause before the final attempt.
+  if ((meshSettled.status === 'rejected') !== (bgSettled.status === 'rejected')) {
+    const failedLeg = meshSettled.status === 'rejected' ? 'mesh' : 'background';
+    const reason = meshSettled.status === 'rejected' ? meshSettled.reason : (bgSettled as PromiseRejectedResult).reason;
+    console.log(
+      `[PIPELINE] Salvage: ${failedLeg} leg failed (${reason instanceof Error ? reason.message : reason}) — ` +
+        `keeping the surviving leg, retrying ${failedLeg} once in ${SALVAGE_RETRY_DELAY_MS / 1000}s`
+    );
+    await new Promise((resolve) => setTimeout(resolve, SALVAGE_RETRY_DELAY_MS));
+    if (meshSettled.status === 'rejected') {
+      meshSettled = await Promise.allSettled([runMesh()]).then((r) => r[0]);
+    } else {
+      bgSettled = await Promise.allSettled([runBackground()]).then((r) => r[0]);
+    }
   }
+
+  if (meshSettled.status === 'rejected') {
+    console.log(`[PIPELINE] Stage failed: mesh generation`);
+    throw meshSettled.reason;
+  }
+  if (bgSettled.status === 'rejected') {
+    console.log(`[PIPELINE] Stage failed: background generation`);
+    throw bgSettled.reason;
+  }
+
+  const meshTask = meshSettled.value;
+  const bgResult = bgSettled.value;
 
   const meshUrl = getMeshUrl(meshTask, 'glb');
 
