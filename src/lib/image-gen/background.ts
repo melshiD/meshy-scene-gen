@@ -1,8 +1,12 @@
 /**
- * Background Generator - Generate scene backgrounds via DALL-E 3
+ * Background Generator - Generate scene backgrounds via the OpenAI images API
  *
  * Creates high-quality background images optimized for 3D scene composition.
  * Backgrounds are generated without the main subject to allow clean compositing.
+ *
+ * Model: GPT-image family (dall-e-3 was removed from the API on 2026-05-12).
+ * GPT-image models return base64 image data only (no CDN URL), so results are
+ * surfaced as data: URLs — persistBackground() fetches those like any other URL.
  */
 
 import OpenAI from 'openai';
@@ -11,25 +15,22 @@ import OpenAI from 'openai';
 // Types
 // ============================================================================
 
-/** Supported image sizes for DALL-E 3 */
-export type DallESize = '1024x1024' | '1792x1024' | '1024x1792';
+/** Supported image sizes for GPT-image models */
+export type BackgroundImageSize = '1024x1024' | '1536x1024' | '1024x1536' | 'auto';
 
-/** Image quality options */
-export type DallEQuality = 'standard' | 'hd';
-
-/** Image style options */
-export type DallEStyle = 'vivid' | 'natural';
+/** Image quality options (GPT-image enum; drives image-output token count → cost) */
+export type BackgroundImageQuality = 'low' | 'medium' | 'high' | 'auto';
 
 /** Configuration for background generation */
 export interface BackgroundConfig {
   /** OpenAI API key (defaults to OPENAI_API_KEY env var) */
   apiKey?: string;
+  /** Image model (defaults to BACKGROUND_IMAGE_MODEL env var, then gpt-image-1) */
+  model?: string;
   /** Image size */
-  size?: DallESize;
+  size?: BackgroundImageSize;
   /** Image quality */
-  quality?: DallEQuality;
-  /** Image style */
-  style?: DallEStyle;
+  quality?: BackgroundImageQuality;
   /** Additional prompt modifiers */
   modifiers?: string[];
 }
@@ -37,9 +38,9 @@ export interface BackgroundConfig {
 /** Successful generation result */
 interface GenerateSuccess {
   success: true;
-  /** URL to the generated image */
+  /** data: URL carrying the generated image (GPT-image models return b64 only) */
   url: string;
-  /** Revised prompt used by DALL-E */
+  /** Revised prompt if the model reports one (GPT-image models usually don't) */
   revisedPrompt: string;
 }
 
@@ -55,21 +56,29 @@ export type GenerateBackgroundResult = GenerateSuccess | GenerateError;
 // Constants
 // ============================================================================
 
-const DEFAULT_CONFIG: Required<Omit<BackgroundConfig, 'apiKey' | 'modifiers'>> = {
+const DEFAULT_CONFIG: Required<Omit<BackgroundConfig, 'apiKey' | 'model' | 'modifiers'>> = {
   size: '1024x1024',
-  quality: 'hd',
-  style: 'natural',
+  quality: 'medium',
 };
+
+/** Default model; override per-deploy with BACKGROUND_IMAGE_MODEL (e.g. gpt-image-1-mini) */
+const DEFAULT_MODEL = 'gpt-image-1';
+
+function getModel(config: BackgroundConfig): string {
+  return config.model ?? process.env.BACKGROUND_IMAGE_MODEL ?? DEFAULT_MODEL;
+}
 
 /**
  * Prompt enhancement for better background generation
- * These modifiers help DALL-E produce backgrounds suitable for 3D compositing
+ * These modifiers help the image model produce backgrounds suitable for 3D compositing.
+ * (The old dall-e-3 style: 'natural' preference lives here as prompt text now.)
  */
 const BACKGROUND_MODIFIERS = [
   'empty scene without any objects in the foreground',
   'suitable for product photography compositing',
   'clean composition with space for subject placement',
   'professional lighting',
+  'natural photographic style',
 ];
 
 // ============================================================================
@@ -159,44 +168,54 @@ export async function generateBackground(
     const allModifiers = [...BACKGROUND_MODIFIERS, ...userModifiers];
     const enhancedPrompt = buildBackgroundPrompt(trimmedDescription, allModifiers);
 
+    const model = getModel(config);
     console.log(`[DALLE] Enhanced prompt: "${enhancedPrompt.substring(0, 100)}..."`);
-    console.log(`[DALLE] Config: size=${config.size ?? DEFAULT_CONFIG.size}, quality=${config.quality ?? DEFAULT_CONFIG.quality}, style=${config.style ?? DEFAULT_CONFIG.style}`);
+    console.log(`[DALLE] Config: model=${model}, size=${config.size ?? DEFAULT_CONFIG.size}, quality=${config.quality ?? DEFAULT_CONFIG.quality}`);
 
-    // NOTE (2026): the OpenAI images API now strictly rejects the legacy dall-e-3 params
-    // (response_format, style — observed as 400 "Unknown parameter" via LiteLLM). Send only the
-    // universally-valid core; quality/style preferences are folded into the prompt text instead.
-    // dall-e-3 returns a URL by default, which is what the handling below expects.
+    // GPT-image param surface (docs, 2026-07): model, prompt, n, size, quality (+output_format,
+    // background — defaults fine). The legacy dall-e-3 params response_format/style don't exist
+    // here (dall-e-3 itself was removed 2026-05-12). Style preference is folded into the prompt.
     const response = await client.images.generate({
-      model: 'dall-e-3',
+      model,
       prompt: enhancedPrompt,
       n: 1,
       size: config.size ?? DEFAULT_CONFIG.size,
+      quality: config.quality ?? DEFAULT_CONFIG.quality,
     });
 
     if (!response.data || response.data.length === 0) {
-      console.log('[DALLE] Error: No image data in DALL-E response');
+      console.log('[DALLE] Error: No image data in response');
       return {
         success: false,
-        error: 'No image data in DALL-E response',
+        error: 'No image data in response',
       };
     }
 
     const imageData = response.data[0];
-    if (!imageData?.url) {
-      console.log('[DALLE] Error: No image URL in DALL-E response');
+    // GPT-image models return base64 only; keep the url branch as a fallback in case a future
+    // model/proxy hands back a CDN URL again.
+    const url = imageData?.b64_json
+      ? `data:image/png;base64,${imageData.b64_json}`
+      : imageData?.url;
+    if (!url) {
+      console.log('[DALLE] Error: No image payload (b64_json or url) in response');
       return {
         success: false,
-        error: 'No image URL in DALL-E response',
+        error: 'No image payload (b64_json or url) in response',
       };
     }
 
-    const revisedPrompt = imageData.revised_prompt ?? enhancedPrompt;
+    const revisedPrompt = imageData?.revised_prompt ?? enhancedPrompt;
     console.log(`[DALLE] Success! Revised prompt: "${revisedPrompt.substring(0, 100)}..."`);
-    console.log(`[DALLE] Image URL: ${imageData.url.substring(0, 60)}...`);
+    console.log(
+      imageData?.b64_json
+        ? `[DALLE] Image received inline (${Math.round(imageData.b64_json.length * 0.75 / 1024)} KB)`
+        : `[DALLE] Image URL: ${url.substring(0, 60)}...`
+    );
 
     return {
       success: true,
-      url: imageData.url,
+      url,
       revisedPrompt,
     };
   } catch (error) {
@@ -305,22 +324,15 @@ function getMoodModifiers(mood: string): string[] {
 }
 
 /**
- * Validate a DALL-E size string
+ * Validate an image size string
  */
-export function isValidSize(size: string): size is DallESize {
-  return ['1024x1024', '1792x1024', '1024x1792'].includes(size);
+export function isValidSize(size: string): size is BackgroundImageSize {
+  return ['1024x1024', '1536x1024', '1024x1536', 'auto'].includes(size);
 }
 
 /**
- * Validate DALL-E quality option
+ * Validate an image quality option
  */
-export function isValidQuality(quality: string): quality is DallEQuality {
-  return ['standard', 'hd'].includes(quality);
-}
-
-/**
- * Validate DALL-E style option
- */
-export function isValidStyle(style: string): style is DallEStyle {
-  return ['vivid', 'natural'].includes(style);
+export function isValidQuality(quality: string): quality is BackgroundImageQuality {
+  return ['low', 'medium', 'high', 'auto'].includes(quality);
 }

@@ -1,7 +1,7 @@
 /**
  * Background Image Generation
  *
- * DALL-E powered background generation for 3D scenes
+ * GPT-image powered background generation for 3D scenes
  */
 
 export {
@@ -18,6 +18,5 @@ export {
   type BackgroundError,
   type ImageSize,
   type ImageQuality,
-  type ImageStyle,
   type BackgroundMood,
 } from './client';

@@ -74,51 +74,63 @@ describe('BackgroundClient', () => {
   });
 
   describe('generate', () => {
-    it('should generate a background with default options', async () => {
-      const mockUrl = 'https://oai.example.com/image.png';
+    it('should generate a background with default options (b64_json → data URL)', async () => {
+      const mockB64 = Buffer.from('fake-png-bytes').toString('base64');
       const mockRevisedPrompt = 'Enhanced prompt';
 
       mockGenerate.mockResolvedValueOnce({
-        data: [{ url: mockUrl, revised_prompt: mockRevisedPrompt }],
+        data: [{ b64_json: mockB64, revised_prompt: mockRevisedPrompt }],
+      });
+
+      const result = await client.generate({ prompt: 'a sunset beach' });
+
+      expect(result.url).toBe(`data:image/png;base64,${mockB64}`);
+      expect(result.revisedPrompt).toBe(mockRevisedPrompt);
+      expect(mockGenerate).toHaveBeenCalledWith({
+        model: 'gpt-image-1',
+        prompt: expect.stringContaining('a sunset beach'),
+        n: 1,
+        size: '1024x1024',
+        quality: 'medium',
+      });
+    });
+
+    it('should support custom size and quality (GPT-image enums)', async () => {
+      mockGenerate.mockResolvedValueOnce({
+        data: [{ b64_json: 'aGVsbG8=' }],
+      });
+
+      await client.generate({
+        prompt: 'a forest scene',
+        size: '1536x1024',
+        quality: 'high',
+      });
+
+      expect(mockGenerate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          size: '1536x1024',
+          quality: 'high',
+        })
+      );
+      expect(mockGenerate).toHaveBeenCalledWith(
+        expect.not.objectContaining({ response_format: expect.anything(), style: expect.anything() })
+      );
+    });
+
+    it('should fall back to a CDN url if the model returns one', async () => {
+      const mockUrl = 'https://oai.example.com/image.png';
+      mockGenerate.mockResolvedValueOnce({
+        data: [{ url: mockUrl }],
       });
 
       const result = await client.generate({ prompt: 'a sunset beach' });
 
       expect(result.url).toBe(mockUrl);
-      expect(result.revisedPrompt).toBe(mockRevisedPrompt);
-      expect(mockGenerate).toHaveBeenCalledWith({
-        model: 'dall-e-3',
-        prompt: expect.stringContaining('a sunset beach'),
-        n: 1,
-        size: '1024x1024',
-      });
-    });
-
-    it('should support custom size (quality/style no longer sent — removed from the images API)', async () => {
-      mockGenerate.mockResolvedValueOnce({
-        data: [{ url: 'https://example.com/image.png' }],
-      });
-
-      await client.generate({
-        prompt: 'a forest scene',
-        size: '1792x1024',
-        quality: 'standard',
-        style: 'vivid',
-      });
-
-      expect(mockGenerate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          size: '1792x1024',
-        })
-      );
-      expect(mockGenerate).toHaveBeenCalledWith(
-        expect.not.objectContaining({ quality: expect.anything(), style: expect.anything() })
-      );
     });
 
     it('should include context in enhanced prompt', async () => {
       mockGenerate.mockResolvedValueOnce({
-        data: [{ url: 'https://example.com/image.png' }],
+        data: [{ b64_json: 'aGVsbG8=' }],
       });
 
       await client.generate({
@@ -133,13 +145,13 @@ describe('BackgroundClient', () => {
       );
     });
 
-    it('should throw if no image URL returned', async () => {
+    it('should throw if no image payload returned', async () => {
       mockGenerate.mockResolvedValueOnce({
         data: [{}],
       });
 
       await expect(client.generate({ prompt: 'test' })).rejects.toThrow(
-        'No image URL returned from DALL-E'
+        'No image payload returned from the images API'
       );
     });
   });
@@ -148,13 +160,13 @@ describe('BackgroundClient', () => {
     it('should generate multiple variations', async () => {
       mockGenerate
         .mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/1.png' }],
+          data: [{ b64_json: 'MQ==' }],
         })
         .mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/2.png' }],
+          data: [{ b64_json: 'Mg==' }],
         })
         .mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/3.png' }],
+          data: [{ b64_json: 'Mw==' }],
         });
 
       const results = await client.generateVariations(
@@ -163,19 +175,19 @@ describe('BackgroundClient', () => {
       );
 
       expect(results).toHaveLength(3);
-      expect(results[0].url).toBe('https://example.com/1.png');
-      expect(results[1].url).toBe('https://example.com/2.png');
-      expect(results[2].url).toBe('https://example.com/3.png');
+      expect(results[0].url).toBe('data:image/png;base64,MQ==');
+      expect(results[1].url).toBe('data:image/png;base64,Mg==');
+      expect(results[2].url).toBe('data:image/png;base64,Mw==');
     });
 
     it('should handle partial failures gracefully', async () => {
       mockGenerate
         .mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/1.png' }],
+          data: [{ b64_json: 'MQ==' }],
         })
         .mockRejectedValueOnce(new Error('API error'))
         .mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/3.png' }],
+          data: [{ b64_json: 'Mw==' }],
         });
 
       const results = await client.generateVariations({ prompt: 'test' }, 3);
@@ -187,7 +199,7 @@ describe('BackgroundClient', () => {
   describe('generateWithMood', () => {
     it('should add mood context to generation', async () => {
       mockGenerate.mockResolvedValueOnce({
-        data: [{ url: 'https://example.com/image.png' }],
+        data: [{ b64_json: 'aGVsbG8=' }],
       });
 
       await client.generateWithMood('forest scene', 'dramatic');
@@ -204,7 +216,7 @@ describe('BackgroundClient', () => {
 
       for (const mood of moods) {
         mockGenerate.mockResolvedValueOnce({
-          data: [{ url: 'https://example.com/image.png' }],
+          data: [{ b64_json: 'aGVsbG8=' }],
         });
 
         await client.generateWithMood('test scene', mood);
@@ -267,12 +279,15 @@ describe('Helper functions', () => {
   describe('isValidSize', () => {
     it('should return true for valid sizes', () => {
       expect(isValidSize('1024x1024')).toBe(true);
-      expect(isValidSize('1792x1024')).toBe(true);
-      expect(isValidSize('1024x1792')).toBe(true);
+      expect(isValidSize('1536x1024')).toBe(true);
+      expect(isValidSize('1024x1536')).toBe(true);
+      expect(isValidSize('auto')).toBe(true);
     });
 
-    it('should return false for invalid sizes', () => {
+    it('should return false for invalid (incl. legacy dall-e-3) sizes', () => {
       expect(isValidSize('512x512')).toBe(false);
+      expect(isValidSize('1792x1024')).toBe(false);
+      expect(isValidSize('1024x1792')).toBe(false);
       expect(isValidSize('invalid')).toBe(false);
       expect(isValidSize('')).toBe(false);
     });

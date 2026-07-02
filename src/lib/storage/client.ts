@@ -149,12 +149,13 @@ export async function persistBackground(temporaryUrl: string, jobId: string): Pr
   // Detect format from URL or content type
   const format = detectImageFormat(temporaryUrl);
 
-  // Upload to persistent storage
+  // Upload to persistent storage. GPT-image results arrive as multi-MB data: URLs — record a
+  // marker instead of the payload so metadata (and anything that embeds it) stays small.
   const result = await storage.upload(blob, {
     key: generateBackgroundKey(jobId, format),
     contentType: getImageMimeType(format),
     metadata: {
-      originalUrl: temporaryUrl,
+      originalUrl: temporaryUrl.startsWith('data:') ? 'inline:b64_json' : temporaryUrl,
       persistedAt: new Date().toISOString(),
     },
   });

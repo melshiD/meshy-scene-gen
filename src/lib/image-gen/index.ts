@@ -16,14 +16,12 @@ export {
   generateBackgroundWithMood,
   isValidSize,
   isValidQuality,
-  isValidStyle,
 } from './background';
 
 // Type re-exports for convenience
 export type {
-  DallESize,
-  DallEQuality,
-  DallEStyle,
+  BackgroundImageSize,
+  BackgroundImageQuality,
   BackgroundConfig,
   GenerateBackgroundResult,
 } from './background';

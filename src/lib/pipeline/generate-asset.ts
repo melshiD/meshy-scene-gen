@@ -348,11 +348,12 @@ async function processJob(
     console.log(`[PIPELINE] Mesh URL: ${persistentMeshUrl}`);
     console.log(`[PIPELINE] Background URL: ${persistentBackgroundUrl}`);
 
-    // Set asset references in manifest
+    // Set asset references in manifest. GPT-image backgrounds arrive as multi-MB data: URLs —
+    // record a marker so the manifest doesn't embed the whole image.
     builder.setBackgroundAsset({
       url: persistentBackgroundUrl,
       key: generateBackgroundKey(jobId),
-      originalUrl: tempBackgroundUrl,
+      originalUrl: tempBackgroundUrl.startsWith('data:') ? 'inline:b64_json' : tempBackgroundUrl,
       contentType: 'image/png',
       persistedAt: new Date().toISOString(),
     });

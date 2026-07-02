@@ -4,7 +4,7 @@
 # never leave the box / never reach a build session.
 #
 # Vault sources (Infisical, env prod):
-#   LiteLLM key    -> mint on box:  cd /opt/lodestar/litellm && ./mint-app-key.sh meshy-scene-gen 25 30d "gpt-4o-mini,dall-e-3"
+#   LiteLLM key    -> mint on box:  cd /opt/lodestar/litellm && ./mint-app-key.sh meshy-scene-gen 25 30d "gpt-4o-mini,gpt-image-1,gpt-image-1-mini"
 #                     (then store it at /app/meshy-scene-gen:LITELLM_KEY)
 #   MESHY_API_KEY  -> /provider/meshy:API_KEY
 #   DATABASE_URL   -> /app/meshy-scene-gen:DATABASE_URL   (minted by core-postgres/provision-db.sh)
@@ -32,9 +32,11 @@ cat > .env <<EOF
 NODE_ENV=production
 PORT=3000
 # LLM calls go to LiteLLM (OpenAI-compatible) — the openai SDK reads OPENAI_BASE_URL from env.
-# Models used: gpt-4o-mini (prompt decomposition) + dall-e-3 (backgrounds), metered per this key.
+# Models used: gpt-4o-mini (prompt decomposition) + gpt-image-1 (backgrounds), metered per this key.
 OPENAI_BASE_URL=http://litellm:4000/v1
 OPENAI_API_KEY=${LITELLM_KEY}
+# Background image model (default gpt-image-1; gpt-image-1-mini is ~4x cheaper):
+# BACKGROUND_IMAGE_MODEL=gpt-image-1
 MESHY_API_KEY=${MESHY_KEY}
 # Tenant db on the shared core-Postgres — holds jobs, presets, AND binary assets (Asset table).
 # prisma migrate deploy runs at container start.

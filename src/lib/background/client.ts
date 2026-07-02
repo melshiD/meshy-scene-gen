@@ -1,7 +1,8 @@
 /**
  * Background Image Generation Client
  *
- * Generates scene backgrounds using OpenAI DALL-E API
+ * Generates scene backgrounds using the OpenAI images API (GPT-image family;
+ * dall-e-3 was removed from the API on 2026-05-12).
  */
 
 import OpenAI from 'openai';
@@ -12,27 +13,26 @@ import OpenAI from 'openai';
 
 export interface BackgroundClientConfig {
   apiKey: string;
+  /** Image model (defaults to BACKGROUND_IMAGE_MODEL env var, then gpt-image-1) */
+  model?: string;
 }
 
-export type ImageSize = '1024x1024' | '1792x1024' | '1024x1792';
-export type ImageQuality = 'standard' | 'hd';
-export type ImageStyle = 'natural' | 'vivid';
+export type ImageSize = '1024x1024' | '1536x1024' | '1024x1536' | 'auto';
+export type ImageQuality = 'low' | 'medium' | 'high' | 'auto';
 
 export interface GenerateBackgroundOptions {
   /** The scene/background description */
   prompt: string;
   /** Image dimensions (default: 1024x1024) */
   size?: ImageSize;
-  /** Image quality (default: hd) */
+  /** Image quality (default: medium) */
   quality?: ImageQuality;
-  /** Style preference (default: natural) */
-  style?: ImageStyle;
   /** Additional context to prepend to prompt */
   context?: string;
 }
 
 export interface GeneratedBackground {
-  /** URL to the generated image (valid for ~1 hour) */
+  /** data: URL carrying the generated image (GPT-image models return b64 only) */
   url: string;
   /** Revised prompt if model modified it */
   revisedPrompt?: string;
@@ -94,12 +94,14 @@ export function createBackgroundClient(
 
 export class BackgroundClient {
   private openai: OpenAI;
+  private model: string;
 
   constructor(config: BackgroundClientConfig) {
     if (!config.apiKey) {
       throw new Error('OpenAI API key is required');
     }
     this.openai = new OpenAI({ apiKey: config.apiKey });
+    this.model = config.model ?? process.env.BACKGROUND_IMAGE_MODEL ?? 'gpt-image-1';
   }
 
   /**
@@ -112,24 +114,28 @@ export class BackgroundClient {
     );
 
     try {
-      // NOTE (2026): the OpenAI images API now strictly rejects the legacy dall-e-3 params
-      // (response_format, style — observed as 400 "Unknown parameter"). Send only the universally-
-      // valid core. dall-e-3 returns a URL by default, which is what the handling below expects.
+      // GPT-image param surface (docs, 2026-07): model, prompt, n, size, quality. The legacy
+      // dall-e-3 params response_format/style don't exist here (dall-e-3 removed 2026-05-12).
       const response = await this.openai.images.generate({
-        model: 'dall-e-3',
+        model: this.model,
         prompt: enhancedPrompt,
         n: 1,
         size: options.size ?? '1024x1024',
+        quality: options.quality ?? 'medium',
       });
 
       const image = response.data?.[0];
-      if (!image?.url) {
-        throw new Error('No image URL returned from DALL-E');
+      // GPT-image models return base64 only; url branch kept as a fallback.
+      const url = image?.b64_json
+        ? `data:image/png;base64,${image.b64_json}`
+        : image?.url;
+      if (!url) {
+        throw new Error('No image payload returned from the images API');
       }
 
       return {
-        url: image.url,
-        revisedPrompt: image.revised_prompt,
+        url,
+        revisedPrompt: image?.revised_prompt,
       };
     } catch (err) {
       // Re-throw if already a BackgroundError or standard Error
@@ -156,7 +162,7 @@ export class BackgroundClient {
     options: GenerateBackgroundOptions,
     count: number = 3
   ): Promise<GeneratedBackground[]> {
-    // DALL-E 3 only supports n=1, so we make multiple requests
+    // Independent requests give more varied results than a single n>1 call
     const promises = Array.from({ length: count }, () =>
       this.generate(options)
     );
@@ -253,5 +259,5 @@ export function getMoodDescription(mood: BackgroundMood): string {
  * Validate image size
  */
 export function isValidSize(size: string): size is ImageSize {
-  return ['1024x1024', '1792x1024', '1024x1792'].includes(size);
+  return ['1024x1024', '1536x1024', '1024x1536', 'auto'].includes(size);
 }
