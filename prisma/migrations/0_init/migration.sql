@@ -49,6 +49,18 @@ CREATE TABLE "MultiObjectObject" (
 );
 
 -- CreateTable
+CREATE TABLE "Asset" (
+    "key" TEXT NOT NULL,
+    "contentType" TEXT NOT NULL,
+    "data" BYTEA NOT NULL,
+    "size" INTEGER NOT NULL,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Asset_pkey" PRIMARY KEY ("key")
+);
+
+-- CreateTable
 CREATE TABLE "ScenePreset" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -73,13 +85,3 @@ CREATE UNIQUE INDEX "MultiObjectObject_jobId_objectId_key" ON "MultiObjectObject
 -- AddForeignKey
 ALTER TABLE "MultiObjectObject" ADD CONSTRAINT "MultiObjectObject_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "MultiObjectJob"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
-┌─────────────────────────────────────────────────────────┐
-│  Update available 5.22.0 -> 7.8.0                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘

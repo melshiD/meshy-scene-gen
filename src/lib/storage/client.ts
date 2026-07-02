@@ -9,6 +9,7 @@ import type { MultiCaptureResult } from '@/lib/scene';
 import type { StorageProvider, CaptureUploadResult, StorageConfig } from './types';
 import { FilesystemStorageProvider } from './filesystem';
 import { R2StorageProvider } from './r2';
+import { PostgresStorageProvider } from './postgres';
 import {
   generateCaptureKey,
   generateBackgroundKey,
@@ -37,15 +38,21 @@ export function getStorage(): StorageProvider {
       process.env.R2_BUCKET_NAME;
 
     if (hasR2Config) {
-      // Production: assets live in Cloudflare R2 (S3-compatible). Public URLs come from
-      // STORAGE_PUBLIC_URL (the bucket's public domain). This is the path on lodestar-core-1.
+      // Object storage, only if explicitly configured (all four R2 vars). Not the Lodestar default.
       storageProvider = new R2StorageProvider({
         publicUrl: process.env.STORAGE_PUBLIC_URL,
       });
       return storageProvider;
     }
 
-    // Default (local dev): filesystem storage under public/generated.
+    if (process.env.DATABASE_URL) {
+      // Production on lodestar-core-1: assets live in the core-Postgres tenant db (Asset table),
+      // served via /api/assets/[...key]. One state store; container stays stateless.
+      storageProvider = new PostgresStorageProvider();
+      return storageProvider;
+    }
+
+    // Default (local dev, no DB): filesystem storage under public/generated.
     const config: StorageConfig = {
       publicUrl: process.env.STORAGE_PUBLIC_URL ?? '/generated',
       basePath: 'public/generated',

@@ -1,9 +1,11 @@
 // meshy-scene-gen — persistence schema. Postgres tenant on the shared Lodestar core-Postgres
 // (DATABASE_URL = postgresql://meshy_scene_gen:...@core-postgres:5432/meshy_scene_gen).
 //
-// Only durable metadata lives here: generation jobs + custom scene presets. Binary assets (meshes,
-// backgrounds, captures) and the scene manifest.json persist in Cloudflare R2 via the storage
-// abstraction (src/lib/storage) — not in Postgres. Enum/field names mirror src/types/index.ts so the
+// EVERYTHING durable lives here: generation jobs, custom scene presets, AND binary assets (meshes,
+// backgrounds, captures, manifest.json) — the Asset table backs PostgresStorageProvider
+// (src/lib/storage/postgres.ts), served via /api/assets/[...key]. One state store, one backup story,
+// stateless container. (Dave, 2026-07-01: assets in the database instead of Cloudflare R2; the
+// StorageProvider interface keeps an object-storage swap possible later.) Enum/field names mirror src/types/index.ts so the
 // TS JobStatus strings map 1:1.
 //
 // Matches opinion-generator's proven setup: prisma-client-js generator, `prisma generate` runs inside
@@ -74,6 +76,17 @@ model MultiObjectObject {
   job      MultiObjectJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   @@unique([jobId, objectId])
+}
+
+/// Binary asset blobs (meshes .glb, background/capture images, manifest.json), keyed by the storage
+/// key (e.g. "mesh/job-123/model.glb"). Backs PostgresStorageProvider; served by /api/assets/[...key].
+model Asset {
+  key         String   @id
+  contentType String
+  data        Bytes
+  size        Int
+  metadata    Json?
+  createdAt   DateTime @default(now())
 }
 
 /// Custom user-saved scene preset (was an in-memory Map — lost on restart). The 5 built-in presets
