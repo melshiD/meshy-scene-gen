@@ -162,15 +162,15 @@ export async function generateBackground(
     console.log(`[DALLE] Enhanced prompt: "${enhancedPrompt.substring(0, 100)}..."`);
     console.log(`[DALLE] Config: size=${config.size ?? DEFAULT_CONFIG.size}, quality=${config.quality ?? DEFAULT_CONFIG.quality}, style=${config.style ?? DEFAULT_CONFIG.style}`);
 
+    // NOTE (2026): the OpenAI images API now strictly rejects the legacy dall-e-3 params
+    // (response_format, style — observed as 400 "Unknown parameter" via LiteLLM). Send only the
+    // universally-valid core; quality/style preferences are folded into the prompt text instead.
+    // dall-e-3 returns a URL by default, which is what the handling below expects.
     const response = await client.images.generate({
       model: 'dall-e-3',
       prompt: enhancedPrompt,
       n: 1,
       size: config.size ?? DEFAULT_CONFIG.size,
-      quality: config.quality ?? DEFAULT_CONFIG.quality,
-      style: config.style ?? DEFAULT_CONFIG.style,
-      // NOTE: response_format was removed from the OpenAI images API (2026) — sending it now 400s.
-      // dall-e-3 returns a URL by default, which is what the handling below expects.
     });
 
     if (!response.data || response.data.length === 0) {

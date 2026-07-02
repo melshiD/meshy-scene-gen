@@ -112,15 +112,14 @@ export class BackgroundClient {
     );
 
     try {
+      // NOTE (2026): the OpenAI images API now strictly rejects the legacy dall-e-3 params
+      // (response_format, style — observed as 400 "Unknown parameter"). Send only the universally-
+      // valid core. dall-e-3 returns a URL by default, which is what the handling below expects.
       const response = await this.openai.images.generate({
         model: 'dall-e-3',
         prompt: enhancedPrompt,
         n: 1,
         size: options.size ?? '1024x1024',
-        quality: options.quality ?? 'hd',
-        style: options.style ?? 'natural',
-        // NOTE: response_format was removed from the OpenAI images API (2026) — sending it now 400s.
-        // dall-e-3 returns a URL by default, which is what the handling below expects.
       });
 
       const image = response.data?.[0];

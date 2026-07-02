@@ -91,12 +91,10 @@ describe('BackgroundClient', () => {
         prompt: expect.stringContaining('a sunset beach'),
         n: 1,
         size: '1024x1024',
-        quality: 'hd',
-        style: 'natural',
       });
     });
 
-    it('should support custom size, quality, and style', async () => {
+    it('should support custom size (quality/style no longer sent — removed from the images API)', async () => {
       mockGenerate.mockResolvedValueOnce({
         data: [{ url: 'https://example.com/image.png' }],
       });
@@ -111,9 +109,10 @@ describe('BackgroundClient', () => {
       expect(mockGenerate).toHaveBeenCalledWith(
         expect.objectContaining({
           size: '1792x1024',
-          quality: 'standard',
-          style: 'vivid',
         })
+      );
+      expect(mockGenerate).toHaveBeenCalledWith(
+        expect.not.objectContaining({ quality: expect.anything(), style: expect.anything() })
       );
     });
 
