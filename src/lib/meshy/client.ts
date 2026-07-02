@@ -11,7 +11,11 @@ import type {
 
 const MESHY_API_BASE = 'https://api.meshy.ai/v2';
 const DEFAULT_POLL_INTERVAL_MS = 5000;
-const DEFAULT_MAX_POLL_TIME_MS = 300000; // 5 minutes
+// 10 minutes PER STAGE (preview and refine each get their own window). 5 min proved too tight in
+// prod 2026-07-02: under Meshy load both stages crawled past 300s at 99% and our own watchdog
+// failed jobs whose tasks then completed server-side anyway (Meshy dedups identical creates back
+// to the live task, so the abandonment wasn't billed twice — but the job still failed for nothing).
+const DEFAULT_MAX_POLL_TIME_MS = 600000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_INITIAL_DELAY_MS = 1000;
 
