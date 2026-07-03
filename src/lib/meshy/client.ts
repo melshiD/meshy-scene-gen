@@ -4,6 +4,7 @@ import type {
   MeshyCreateTaskRequest,
   MeshyArtStyle,
 } from '@/types';
+import { proxiedFetch } from '@/lib/net/egress';
 
 // ============================================================================
 // Configuration
@@ -179,7 +180,8 @@ async function meshyFetch<T>(
   const url = `${MESHY_API_BASE}${endpoint}`;
 
   try {
-    const response = await fetch(url, {
+    // External host (api.meshy.ai) → route through the Squid egress proxy in prod.
+    const response = await proxiedFetch(url, {
       ...options,
       headers: {
         Authorization: `Bearer ${apiKey}`,

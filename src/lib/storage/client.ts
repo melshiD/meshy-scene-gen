@@ -6,6 +6,7 @@
  */
 
 import type { MultiCaptureResult } from '@/lib/scene';
+import { proxiedFetch } from '@/lib/net/egress';
 import type { StorageProvider, CaptureUploadResult, StorageConfig } from './types';
 import { FilesystemStorageProvider } from './filesystem';
 import { R2StorageProvider } from './r2';
@@ -264,7 +265,11 @@ async function downloadWithRetry(url: string, maxRetries: number): Promise<Blob>
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetch(url);
+      // External downloads (assets.meshy.ai mesh CDN) route through the Squid egress
+      // proxy in prod; inline `data:` payloads (persisted backgrounds) stay direct —
+      // they never touch the network, so they must NOT go through the proxy.
+      const isExternal = url.startsWith('http://') || url.startsWith('https://');
+      const response = isExternal ? await proxiedFetch(url) : await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }

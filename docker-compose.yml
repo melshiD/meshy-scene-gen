@@ -2,6 +2,15 @@
 # LiteLLM (http://litellm:4000) and core-Postgres (core-postgres:5432). STATELESS container:
 # jobs, presets AND binary assets all live in core-PG (Asset table, served via /api/assets) — no volumes.
 # Secrets come from .env (generated on the box by gen-env.sh from the vault). Nothing secret here.
+#
+# EGRESS (DR-0011 meshy S4): meshy is a PROXIED consumer, not a broker. Its only external egress is
+# .meshy.ai (REST api.meshy.ai + one-time mesh download from assets.meshy.ai during a generation; every
+# later view is served from core-PG). Node's fetch ignores HTTP_PROXY, so src/lib/net/egress.ts attaches
+# an undici ProxyAgent (EGRESS_PROXY) to JUST those two meshy.ai calls — LiteLLM/PG stay direct in-cluster.
+# Single-net bind: the container is only on lodestar_apps, so its PINNED IP (172.20.0.20) is both the src
+# Squid sees on the proxied path AND the DROP target for bind-egress.sh (no edge bridge / gw_priority
+# needed — with one interface the pin is unambiguously the egress source). Keep 172.20.0.20 in sync with
+# compose/squid/squid.conf (meshy_src) and bind-egress.sh (TARGET_IP[meshy]).
 
 services:
   meshy-scene-gen:
@@ -10,8 +19,12 @@ services:
     image: lodestar/meshy-scene-gen:local
     restart: unless-stopped
     env_file: .env            # LiteLLM virtual key + MESHY_API_KEY + DATABASE_URL
+    environment:
+      # Route the two external meshy.ai fetches through the Squid allowlist (scoped in code, not global).
+      - "EGRESS_PROXY=http://squid:3128"
     networks:
-      - lodestar_apps
+      lodestar_apps:
+        ipv4_address: 172.20.0.20
     # Loopback publish for operator testing; public exposure is operator-gated (Dave-initiated only).
     # App-to-app traffic uses the in-cluster name (http://meshy-scene-gen:3000), no publish needed.
     ports:
