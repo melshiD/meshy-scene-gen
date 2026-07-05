@@ -3,14 +3,16 @@
 # jobs, presets AND binary assets all live in core-PG (Asset table, served via /api/assets) — no volumes.
 # Secrets come from .env (generated on the box by gen-env.sh from the vault). Nothing secret here.
 #
-# EGRESS (DR-0011 meshy S4): meshy is a PROXIED consumer, not a broker. Its only external egress is
-# .meshy.ai (REST api.meshy.ai + one-time mesh download from assets.meshy.ai during a generation; every
-# later view is served from core-PG). Node's fetch ignores HTTP_PROXY, so src/lib/net/egress.ts attaches
-# an undici ProxyAgent (EGRESS_PROXY) to JUST those two meshy.ai calls — LiteLLM/PG stay direct in-cluster.
-# Single-net bind: the container is only on lodestar_apps, so its PINNED IP (172.20.0.20) is both the src
-# Squid sees on the proxied path AND the DROP target for bind-egress.sh (no edge bridge / gw_priority
-# needed — with one interface the pin is unambiguously the egress source). Keep 172.20.0.20 in sync with
-# compose/squid/squid.conf (meshy_src) and bind-egress.sh (TARGET_IP[meshy]).
+# EGRESS: meshy has two external legs, now split by mechanism:
+#  - api.meshy.ai  (REST) → KeyMaster S5 (DR-0014 §E): routed through ENVOY over mTLS. meshy holds NO
+#    MESHY_API_KEY; it presents its SPIRE client SVID (written by the meshy-svid sidecar) and Envoy injects
+#    the vault-fed key server-side. src/lib/net/egress.ts injectedFetch() drives this (MESHY_ENVOY_ORIGIN).
+#  - assets.meshy.ai (one-time mesh download during a generation) → still the Squid allowlist via the undici
+#    ProxyAgent (EGRESS_PROXY), scoped in code to that call. LiteLLM/core-PG stay direct in-cluster.
+# Single-net bind PRESERVED: the app is only on lodestar_apps (pinned 172.20.0.20 = the src Squid sees AND
+# the DROP target for bind-egress.sh). It reaches Envoy by name on the SAME bridge (Envoy is multi-homed onto
+# lodestar_apps) so it never joins keymaster_s5 — which would grant internet NAT there and bypass the DROP.
+# Keep 172.20.0.20 in sync with compose/squid/squid.conf (meshy_src) and bind-egress.sh (TARGET_IP[meshy]).
 
 services:
   meshy-scene-gen:
@@ -18,10 +20,18 @@ services:
     build: .
     image: lodestar/meshy-scene-gen:local
     restart: unless-stopped
-    env_file: .env            # LiteLLM virtual key + MESHY_API_KEY + DATABASE_URL
+    depends_on:
+      - meshy-scene-gen-svid  # the SVID sidecar writes the client cert this app presents to Envoy
+    env_file: .env            # LiteLLM virtual key + DATABASE_URL (MESHY_API_KEY REMOVED — S5 injects it)
     environment:
-      # Route the two external meshy.ai fetches through the Squid allowlist (scoped in code, not global).
+      # assets.meshy.ai still egresses via the Squid allowlist (scoped in code, not global).
       - "EGRESS_PROXY=http://squid:3128"
+      # api.meshy.ai → Envoy credential-injecting egress broker over mTLS (S5). No key in this container.
+      - "MESHY_ENVOY_ORIGIN=https://lodestar-envoy-s5:15002"
+      - "MESHY_ENVOY_SPIFFE=spiffe://lodestar.internal/svc/envoy"
+      - "MESHY_SVID_DIR=/svid"
+    volumes:
+      - "meshy_scene_gen_svid:/svid:ro"   # SVID written by the sidecar; presented to Envoy as the mTLS client cert
     networks:
       lodestar_apps:
         ipv4_address: 172.20.0.20
@@ -36,7 +46,30 @@ services:
       retries: 5
       start_period: 40s
 
+  # SVID file-drop sidecar for OUR app (KeyMaster S5, DR-0014 §E). Attested as
+  # spiffe://lodestar.internal/svc/meshy-scene-gen via its label; fetches the app's SVID from the SPIRE agent's
+  # Workload API socket (host bind, read-only) and writes it into the shared volume. Needs NO network (unix
+  # socket only) — least privilege. ("meshy-scene-gen" = our app; NOT the external Meshy service.)
+  meshy-scene-gen-svid:
+    container_name: lodestar-meshy-scene-gen-svid
+    build:
+      context: .
+      dockerfile: Dockerfile.svid
+    image: lodestar/meshy-scene-gen-svid:local
+    restart: unless-stopped
+    labels:
+      - "lodestar.svc=meshy-scene-gen"    # SPIRE docker workload-attestor selector → issues svc/meshy-scene-gen
+    network_mode: none
+    volumes:
+      - "/opt/lodestar/spire/run:/run/spire/sockets:ro"   # SPIRE agent Workload API socket (host bind)
+      - "meshy_scene_gen_svid:/svid"                                 # writes svid.0.pem / svid.0.key / bundle.0.pem
+
 networks:
   # Shared app bridge, created once by the LiteLLM deploy (docker network create lodestar_apps).
   lodestar_apps:
     external: true
+
+volumes:
+  # Shared SVID drop: the sidecar writes (rw), the app reads (:ro). Local named volume on the box.
+  meshy_scene_gen_svid:
+

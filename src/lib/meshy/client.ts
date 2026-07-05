@@ -4,7 +4,7 @@ import type {
   MeshyCreateTaskRequest,
   MeshyArtStyle,
 } from '@/types';
-import { proxiedFetch } from '@/lib/net/egress';
+import { proxiedFetch, injectedFetch, envoyInjectionEnabled } from '@/lib/net/egress';
 
 // ============================================================================
 // Configuration
@@ -176,19 +176,29 @@ async function meshyFetch<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const apiKey = getApiKey();
   const url = `${MESHY_API_BASE}${endpoint}`;
 
   try {
-    // External host (api.meshy.ai) → route through the Squid egress proxy in prod.
-    const response = await proxiedFetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    });
+    let response: Response;
+    if (envoyInjectionEnabled()) {
+      // KeyMaster S5 (DR-0014 §E): route through Envoy over mTLS. Envoy injects
+      // MESHY_API_KEY server-side from the vault — we send NO Authorization and
+      // hold no key. The container has no MESHY_API_KEY at all.
+      response = await injectedFetch(url, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...options.headers },
+      });
+    } else {
+      // Local dev / pre-cutover: attach the key and go direct (or via Squid).
+      response = await proxiedFetch(url, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${getApiKey()}`,
+          'Content-Type': 'application/json',
+          ...options.headers,
+        },
+      });
+    }
 
     if (!response.ok) {
       const errorBody = await response.text();

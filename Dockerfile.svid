@@ -1,0 +1,11 @@
+# SVID file-drop sidecar for OUR app, meshy-scene-gen (KeyMaster S5, DR-0014 §E). Fetches the app's SPIRE
+# X.509-SVID from the agent's Workload API socket and writes it (svid.0.pem / svid.0.key / bundle.0.pem) into a
+# volume the app reads. Attested as spiffe://lodestar.internal/svc/meshy-scene-gen via its
+# `lodestar.svc=meshy-scene-gen` label. Holds no secret — the SVID is short-lived + rotating. Same
+# alpine+spire-agent shape as compose/envoy's test-client. (NB: meshy-scene-gen = our app, NOT the Meshy service.)
+FROM ghcr.io/spiffe/spire-agent@sha256:7561ee91bfe07812f335d5b9e564bbb2ab77ef601558898a23177f692db15fc1 AS spire
+FROM alpine:3.20
+COPY --from=spire /opt/spire/bin/spire-agent /usr/local/bin/spire-agent
+COPY svid-sidecar.sh /usr/local/bin/svid-sidecar.sh
+RUN chmod +x /usr/local/bin/svid-sidecar.sh
+ENTRYPOINT ["/usr/local/bin/svid-sidecar.sh"]
